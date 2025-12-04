@@ -47,13 +47,13 @@
                     <notebook>
                         <page string="Lines">
                             <field name="line_ids">
-                                <tree editable="bottom">
+                                <list editable="bottom">
                                     <field name="sku"/>
                                     <field name="title"/>
                                     <field name="quantity"/>
                                     <field name="weight"/>
                                     <field name="requires_shipping"/>
-                                </tree>
+                                </list>
                             </field>
                         </page>
                         <page string="Shipment">
@@ -64,12 +64,12 @@
                         </page>
                         <page string="Print Jobs">
                             <field name="print_job_ids">
-                                <tree>
+                                <list>
                                     <field name="job_type"/>
                                     <field name="state"/>
                                     <field name="attempts"/>
                                     <field name="printer_id"/>
-                                </tree>
+                                </list>
                             </field>
                         </page>
                         <page string="Raw Payload">
