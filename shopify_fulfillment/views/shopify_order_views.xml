@@ -23,7 +23,7 @@
         <field name="arch" type="xml">
             <form string="Shopify Order">
                 <header>
-                    <button name="action_process" type="object" string="Process" states="pending,error,manual_required"/>
+                    <button name="action_process" type="object" string="Process" invisible="state not in ('pending', 'error', 'manual_required')"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
