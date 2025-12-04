@@ -1,6 +1,94 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <!-- TODO: add kanban/list/form views for shopify.order -->
+    <record id="view_shopify_order_tree" model="ir.ui.view">
+        <field name="name">shopify.order.tree</field>
+        <field name="model">shopify.order</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="order_name"/>
+                <field name="order_number"/>
+                <field name="customer_name"/>
+                <field name="state"/>
+                <field name="source"/>
+                <field name="total_items"/>
+                <field name="total_weight"/>
+                <field name="created_at"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_shopify_order_form" model="ir.ui.view">
+        <field name="name">shopify.order.form</field>
+        <field name="model">shopify.order</field>
+        <field name="arch" type="xml">
+            <form string="Shopify Order">
+                <header>
+                    <button name="action_process" type="object" string="Process" states="pending,error,manual_required"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="order_name"/>
+                        <field name="order_number"/>
+                        <field name="shopify_id" readonly="1"/>
+                        <field name="source"/>
+                        <field name="created_at"/>
+                    </group>
+                    <group string="Shipping">
+                        <field name="customer_name"/>
+                        <field name="shipping_phone"/>
+                        <field name="shipping_address_line1"/>
+                        <field name="shipping_address_line2"/>
+                        <field name="shipping_city"/>
+                        <field name="shipping_state"/>
+                        <field name="shipping_zip"/>
+                        <field name="shipping_country"/>
+                    </group>
+                    <notebook>
+                        <page string="Lines">
+                            <field name="line_ids">
+                                <tree editable="bottom">
+                                    <field name="sku"/>
+                                    <field name="title"/>
+                                    <field name="quantity"/>
+                                    <field name="weight"/>
+                                    <field name="requires_shipping"/>
+                                </tree>
+                            </field>
+                        </page>
+                        <page string="Shipment">
+                            <group>
+                                <field name="box_id"/>
+                                <field name="shipment_id" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Print Jobs">
+                            <field name="print_job_ids">
+                                <tree>
+                                    <field name="job_type"/>
+                                    <field name="state"/>
+                                    <field name="attempts"/>
+                                    <field name="printer_id"/>
+                                </tree>
+                            </field>
+                        </page>
+                        <page string="Raw Payload">
+                            <field name="raw_payload" nolabel="1" readonly="1"/>
+                        </page>
+                        <page string="Errors">
+                            <field name="error_message" nolabel="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_shopify_order_action" model="ir.actions.act_window">
+        <field name="name">Shopify Orders</field>
+        <field name="res_model">shopify.order</field>
+        <field name="view_mode">tree,form</field>
+    </record>
 </odoo>
 
 

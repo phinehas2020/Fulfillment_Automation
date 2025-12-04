@@ -13,13 +13,23 @@ class OdooClient:
         self.api_key = api_key
         self.printer_id = printer_id
 
+    def _headers(self):
+        return {"Authorization": f"Bearer {self.api_key}"}
+
     def fetch_pending_jobs(self) -> List[dict]:
-        # TODO: call /print-agent/poll with auth header
-        return []
+        url = f"{self.base_url}/print-agent/poll"
+        resp = requests.get(url, headers=self._headers(), params={"printer_id": self.printer_id}, timeout=15)
+        if resp.status_code >= 400:
+            return []
+        data = resp.json()
+        return data.get("jobs", [])
 
     def mark_complete(self, job_id: int, success: bool, error: str | None = None):
-        # TODO: call /print-agent/complete with auth header
-        _ = (job_id, success, error)
-        return {"status": "stub"}
+        url = f"{self.base_url}/print-agent/complete"
+        payload = {"job_id": job_id, "success": success, "error_message": error}
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+        if resp.status_code >= 400:
+            return {"status": "error", "detail": resp.text}
+        return resp.json()
 
 

@@ -1,6 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo noupdate="1">
-    <!-- TODO: seed default fulfillment.box records -->
+    <record id="box_small" model="fulfillment.box">
+        <field name="name">Small Box</field>
+        <field name="length">8</field>
+        <field name="width">6</field>
+        <field name="height">4</field>
+        <field name="max_weight">32</field>
+        <field name="box_weight">2</field>
+        <field name="priority">10</field>
+    </record>
+    <record id="box_medium" model="fulfillment.box">
+        <field name="name">Medium Box</field>
+        <field name="length">12</field>
+        <field name="width">10</field>
+        <field name="height">6</field>
+        <field name="max_weight">64</field>
+        <field name="box_weight">4</field>
+        <field name="priority">20</field>
+    </record>
+    <record id="box_large" model="fulfillment.box">
+        <field name="name">Large Box</field>
+        <field name="length">16</field>
+        <field name="width">12</field>
+        <field name="height">8</field>
+        <field name="max_weight">128</field>
+        <field name="box_weight">6</field>
+        <field name="priority">30</field>
+    </record>
 </odoo>
 
 

@@ -1,6 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <!-- TODO: add tree/form views for fulfillment.box -->
+    <record id="view_fulfillment_box_tree" model="ir.ui.view">
+        <field name="name">fulfillment.box.tree</field>
+        <field name="model">fulfillment.box</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="length"/>
+                <field name="width"/>
+                <field name="height"/>
+                <field name="volume"/>
+                <field name="max_weight"/>
+                <field name="box_weight"/>
+                <field name="priority"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_fulfillment_box_form" model="ir.ui.view">
+        <field name="name">fulfillment.box.form</field>
+        <field name="model">fulfillment.box</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="active"/>
+                    </group>
+                    <group string="Dimensions (in)">
+                        <field name="length"/>
+                        <field name="width"/>
+                        <field name="height"/>
+                        <field name="volume" readonly="1"/>
+                    </group>
+                    <group string="Weight (oz)">
+                        <field name="max_weight"/>
+                        <field name="box_weight"/>
+                    </group>
+                    <group>
+                        <field name="priority"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_fulfillment_box" model="ir.actions.act_window">
+        <field name="name">Boxes</field>
+        <field name="res_model">fulfillment.box</field>
+        <field name="view_mode">tree,form</field>
+    </record>
 </odoo>
 
 

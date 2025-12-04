@@ -12,11 +12,13 @@ def main():
     printer = Printer()
 
     while True:
-        # TODO: fetch jobs and send to printer; report completion/errors
         jobs = client.fetch_pending_jobs()
         for job in jobs:
-            printer.send_zpl(job.get("zpl_data", ""))
-            client.mark_complete(job_id=job.get("id"), success=True)
+            try:
+                printer.send_zpl(job.get("zpl_data", ""))
+                client.mark_complete(job_id=job.get("id"), success=True)
+            except Exception as exc:  # pylint: disable=broad-except
+                client.mark_complete(job_id=job.get("id"), success=False, error=str(exc))
 
         time.sleep(POLL_INTERVAL)
 

@@ -1,4 +1,8 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
-# TODO: add access rules for shopify.order, fulfillment.box, print.job
+access_shopify_order_user,access.shopify.order,model_shopify_order,base.group_user,1,1,1,0
+access_shopify_order_line_user,access.shopify.order.line,model_shopify_order_line,base.group_user,1,1,1,0
+access_fulfillment_box_user,access.fulfillment.box,model_fulfillment_box,base.group_user,1,1,1,0
+access_fulfillment_shipment_user,access.fulfillment.shipment,model_fulfillment_shipment,base.group_user,1,0,0,0
+access_print_job_user,access.print.job,model_print_job,base.group_user,1,1,1,0
 
 

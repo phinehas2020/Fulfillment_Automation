@@ -1,4 +1,4 @@
-from odoo import models
+from odoo import fields, models
 
 
 class FulfillmentShipment(models.Model):
@@ -7,6 +7,17 @@ class FulfillmentShipment(models.Model):
     _name = "fulfillment.shipment"
     _description = "Fulfillment Shipment"
 
-    # TODO: add fields per specification (tracking_number, carrier, label data, etc.)
+    order_id = fields.Many2one("shopify.order", ondelete="cascade")
+    carrier = fields.Char()
+    service = fields.Char()
+    tracking_number = fields.Char()
+    tracking_url = fields.Char()
+    label_url = fields.Char()
+    label_zpl = fields.Text()
+    rate_amount = fields.Float()
+    rate_currency = fields.Char()
+    shopify_fulfillment_id = fields.Char()
+    purchased_at = fields.Datetime()
+
 
 
