@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
     <record id="view_print_job_tree" model="ir.ui.view">
-        <field name="name">print.job.tree</field>
+        <field name="name">print.job.list</field>
         <field name="model">print.job</field>
         <field name="arch" type="xml">
-            <tree>
+            <list>
                 <field name="order_id"/>
                 <field name="job_type"/>
                 <field name="state"/>
@@ -12,7 +12,7 @@
                 <field name="printer_id"/>
                 <field name="created_at"/>
                 <field name="completed_at"/>
-            </tree>
+            </list>
         </field>
     </record>
 
@@ -42,7 +42,7 @@
     <record id="action_print_job" model="ir.actions.act_window">
         <field name="name">Print Jobs</field>
         <field name="res_model">print.job</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
     </record>
 </odoo>
 

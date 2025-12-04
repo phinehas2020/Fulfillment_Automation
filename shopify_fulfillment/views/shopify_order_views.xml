@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
     <record id="view_shopify_order_tree" model="ir.ui.view">
-        <field name="name">shopify.order.tree</field>
+        <field name="name">shopify.order.list</field>
         <field name="model">shopify.order</field>
         <field name="arch" type="xml">
-            <tree>
+            <list>
                 <field name="order_name"/>
                 <field name="order_number"/>
                 <field name="customer_name"/>
@@ -13,7 +13,7 @@
                 <field name="total_items"/>
                 <field name="total_weight"/>
                 <field name="created_at"/>
-            </tree>
+            </list>
         </field>
     </record>
 
@@ -87,7 +87,7 @@
     <record id="view_shopify_order_action" model="ir.actions.act_window">
         <field name="name">Shopify Orders</field>
         <field name="res_model">shopify.order</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
     </record>
 </odoo>
 
