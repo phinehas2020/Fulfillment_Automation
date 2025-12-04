@@ -1,0 +1,26 @@
+# Python / Odoo
+__pycache__/
+*.py[cod]
+*.pyo
+*.swp
+*.swo
+.mypy_cache/
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+
+# Build / temp
+*.log
+*.egg-info/
+dist/
+build/
+
+

@@ -1,0 +1,17 @@
+[Unit]
+Description=Odoo Print Agent
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/print_agent
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
+

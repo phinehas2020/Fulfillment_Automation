@@ -1,0 +1,383 @@
+Shopify Fulfillment Automation System
+Technical Specification for Odoo Module + Raspberry Pi Print Agent
+1. Executive Summary
+This document specifies an automated fulfillment system that eliminates manual label purchasing and printing. The system consists of two components: a custom Odoo 18 module that manages order processing, rate shopping, and label purchasing via Shopify's Shipping API, and a lightweight Raspberry Pi print agent that receives print jobs from Odoo and sends them to a Zebra ZP 505 thermal printer.
+Orders flow from Shopify (including Amazon orders routed through Sellbrite) into Odoo via webhook. Odoo automatically determines optimal box sizing, queries shipping rates, purchases the cheapest label, and dispatches the print job. The Pi polls Odoo for pending jobs and prints labels as they arrive. A web dashboard in Odoo provides visibility into order status, packing slip details, and error handling.
+2. System Architecture
+2.1 Architecture Overview
+The system follows a fulfillment-only integration pattern. Shopify remains the source of truth for orders. Odoo handles the fulfillment workflow, then writes fulfillment status back to Shopify. This approach minimizes complexity while delivering immediate automation value.
+Data Flow Diagram
+┌─────────────────────────────────────────────────────────────────┐
+│                         SHOPIFY                                 │
+│   (Direct orders + Amazon orders via Sellbrite)                 │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ Webhook: orders/create
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    ODOO 18 SERVER                               │
+│              (shopify_fulfillment module)                       │
+│                                                                 │
+│   • Webhook receiver + HMAC validation                          │
+│   • Order queue management                                      │
+│   • Box selection engine                                        │
+│   • Shopify Shipping API integration                            │
+│   • Print job dispatch                                          │
+│   • Dashboard views                                             │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ HTTPS polling
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    RASPBERRY PI                                 │
+│               (Lightweight Print Agent)                         │
+│                          │                                      │
+│                          ▼                                      │
+│                   ┌─────────────┐                               │
+│                   │ Zebra ZP505 │                               │
+│                   │   (USB)     │                               │
+│                   └─────────────┘                               │
+└─────────────────────────────────────────────────────────────────┘
+2.2 Component Responsibilities
+Shopify: Source of truth for orders, products, and inventory. Provides shipping rates and label purchasing via Shipping API. Receives fulfillment updates.
+Odoo Module: Receives webhooks, processes orders, manages box selection logic, integrates with Shopify API, generates ZPL labels, manages print queue, provides dashboard UI, handles errors and retries.
+Raspberry Pi: Polls Odoo for print jobs, sends ZPL to thermal printer, reports print success/failure back to Odoo. No business logic—purely a print relay.
+3. Odoo Module Specification
+3.1 Module Structure
+shopify_fulfillment/
+├── __manifest__.py
+├── __init__.py
+├── models/
+│   ├── __init__.py
+│   ├── shopify_order.py
+│   ├── shopify_order_line.py
+│   ├── fulfillment_box.py
+│   ├── fulfillment_shipment.py
+│   └── print_job.py
+├── controllers/
+│   ├── __init__.py
+│   ├── webhook.py
+│   └── print_agent.py
+├── services/
+│   ├── __init__.py
+│   ├── shopify_api.py
+│   ├── box_selector.py
+│   └── zpl_generator.py
+├── views/
+│   ├── shopify_order_views.xml
+│   ├── fulfillment_box_views.xml
+│   ├── print_job_views.xml
+│   └── menu.xml
+├── security/
+│   └── ir.model.access.csv
+├── data/
+│   └── default_boxes.xml
+└── static/
+3.2 Data Models
+Model: shopify.order
+Stores incoming Shopify orders and tracks fulfillment status.
+shopify_id (Char, required) — Shopify order ID
+order_number (Char) — Human-readable order number (e.g., #1001)
+order_name (Char) — Order name from Shopify
+email (Char) — Customer email
+customer_name (Char) — Customer full name
+shipping_address_line1 (Char) — Street address
+shipping_address_line2 (Char) — Apt/Suite/Unit
+shipping_city (Char) — City
+shipping_state (Char) — State/Province code
+shipping_zip (Char) — Postal code
+shipping_country (Char) — Country code (e.g., US)
+shipping_phone (Char) — Customer phone
+total_weight (Float, computed) — Sum of line item weights in grams
+total_items (Integer, computed) — Sum of line item quantities
+state (Selection) — pending | processing | ready_to_ship | shipped | error | manual_required
+error_message (Text) — Error details if state is 'error'
+source (Selection) — shopify | amazon (determined by order tags or source_name)
+line_ids (One2many → shopify.order.line) — Order line items
+shipment_id (Many2one → fulfillment.shipment) — Associated shipment
+box_id (Many2one → fulfillment.box) — Selected box for shipping
+created_at (Datetime) — Shopify order creation timestamp
+raw_payload (Text) — Full JSON webhook payload for debugging
+Model: shopify.order.line
+Individual line items within an order.
+order_id (Many2one → shopify.order, required) — Parent order
+shopify_line_id (Char) — Shopify line item ID
+shopify_product_id (Char) — Shopify product ID
+shopify_variant_id (Char) — Shopify variant ID
+sku (Char) — Product SKU
+title (Char) — Product title
+variant_title (Char) — Variant title (e.g., "Large / Blue")
+quantity (Integer) — Quantity ordered
+weight (Float) — Item weight in grams
+requires_shipping (Boolean) — Whether item needs physical shipment
+Model: fulfillment.box
+Defines available box sizes for packing.
+name (Char, required) — Box name (e.g., "Small Flat Rate")
+length (Float) — Interior length in inches
+width (Float) — Interior width in inches
+height (Float) — Interior height in inches
+max_weight (Float) — Maximum weight capacity in ounces
+box_weight (Float) — Weight of empty box in ounces
+volume (Float, computed) — Interior volume in cubic inches
+active (Boolean) — Whether box is available for selection
+priority (Integer) — Selection priority (lower = preferred when volumes are close)
+Model: fulfillment.shipment
+Stores shipping label data and tracking information.
+order_id (Many2one → shopify.order) — Associated order
+carrier (Char) — Carrier name (USPS, UPS, FedEx)
+service (Char) — Service level (e.g., "Priority Mail")
+tracking_number (Char) — Tracking number
+tracking_url (Char) — Tracking URL
+label_url (Char) — URL to label PDF from Shopify
+label_zpl (Text) — ZPL label data for thermal printing
+rate_amount (Float) — Shipping cost
+rate_currency (Char) — Currency code (USD)
+shopify_fulfillment_id (Char) — Fulfillment ID from Shopify
+purchased_at (Datetime) — When label was purchased
+Model: print.job
+Queue of pending print jobs for the Raspberry Pi.
+order_id (Many2one → shopify.order) — Associated order
+shipment_id (Many2one → fulfillment.shipment) — Associated shipment
+job_type (Selection) — label | packing_slip
+zpl_data (Text) — ZPL commands to send to printer
+state (Selection) — pending | printing | completed | failed
+printer_id (Char) — Identifier of target printer (for multi-printer setups)
+attempts (Integer) — Number of print attempts
+error_message (Text) — Error details if failed
+created_at (Datetime) — Job creation time
+completed_at (Datetime) — Job completion time
+3.3 Controllers (HTTP Endpoints)
+Webhook Controller (controllers/webhook.py)
+Endpoint: POST /shopify/webhook/order
+Purpose: Receives order creation webhooks from Shopify.
+Authentication: HMAC-SHA256 signature validation using Shopify webhook secret.
+Process: 
+Validate HMAC signature from X-Shopify-Hmac-SHA256 header
+Parse JSON payload
+Check for duplicate order (idempotency via shopify_id)
+Create shopify.order record with state='pending'
+Create shopify.order.line records for each line item
+Trigger async processing (or process synchronously if fast enough)
+Return 200 OK immediately to Shopify
+Print Agent Controller (controllers/print_agent.py)
+Endpoint: GET /print-agent/poll
+Purpose: Returns pending print jobs for the Raspberry Pi.
+Authentication: API key in Authorization header (Bearer token).
+Query Parameters: printer_id (optional) — filter jobs for specific printer
+Response: JSON array of pending jobs with id, job_type, zpl_data
+Endpoint: POST /print-agent/complete
+Purpose: Marks a print job as completed or failed.
+Body: { job_id: int, success: bool, error_message?: string }
+Side Effects: On success, updates order state and triggers Shopify fulfillment if all jobs complete.
+3.4 Services
+Shopify API Service (services/shopify_api.py)
+Handles all communication with Shopify's API.
+Configuration (stored in Odoo system parameters):
+shopify.shop_domain — Your Shopify store domain
+shopify.api_key — Shopify Admin API access token
+shopify.api_version — API version (e.g., 2024-01)
+shopify.webhook_secret — HMAC validation secret
+Methods:
+get_shipping_rates(order) — Queries available shipping rates for an order
+purchase_label(order, rate_id) — Purchases shipping label, returns label data
+create_fulfillment(order, tracking_info) — Marks order as fulfilled in Shopify
+validate_webhook(payload, signature) — Validates HMAC signature
+Box Selector Service (services/box_selector.py)
+Determines optimal box size for an order.
+Algorithm:
+Calculate total weight of all line items
+Estimate total volume (sum of item weights * density factor, or use item dimensions if available)
+Filter boxes where max_weight >= total_weight
+Filter boxes where volume >= estimated_volume
+Sort by volume ascending, then by priority
+Select smallest fitting box
+If no box fits, flag order for manual review (state='manual_required')
+Note: This is an intermediate approach. For complex orders, consider upgrading to true 3D bin packing later.
+ZPL Generator Service (services/zpl_generator.py)
+Converts label data to ZPL format for Zebra printers.
+Methods:
+pdf_to_zpl(pdf_data) — Converts PDF label from Shopify to ZPL (uses image conversion)
+generate_packing_slip_zpl(order) — Generates ZPL for packing slip (if printing physically)
+Note: Shopify typically returns PNG or PDF labels. Use a library like pdf2image + Pillow to convert to ZPL-compatible format, or request ZPL directly if Shopify supports it for your carrier.
+3.5 Order Processing Flow
+Complete flow from webhook receipt to label printing:
+Webhook Received: Order created with state='pending'
+Validation: Check all line items have weights. If missing, state='manual_required'
+Box Selection: Run box selector. If no fit, state='manual_required'
+Rate Shopping: Query Shopify for shipping rates using box dimensions + total weight
+Rate Selection: Select cheapest rate (can add rules like "prefer USPS for under 1lb")
+Label Purchase: Purchase label via Shopify API. Create fulfillment.shipment record
+ZPL Conversion: Convert label to ZPL format
+Print Job Creation: Create print.job with state='pending'
+Pi Polls: Print agent fetches job, sends to printer
+Completion: Pi reports success. Order state='shipped'. Shopify fulfillment created
+Error Handling: Any failure sets state='error' with message. Retry available via dashboard
+3.6 Dashboard Views
+Order Queue (Kanban): Columns for pending, processing, ready_to_ship, shipped, error, manual_required. Drag-drop to manually change state.
+Order List View: Sortable/filterable table. Quick filters for state, source (Shopify/Amazon), date range.
+Order Form View: Full order details, line items, shipping address, selected box, shipment info. Actions: Retry Processing, Manual Box Selection, Print Label.
+Packing Slip Display: Employee-facing view showing items to pack. Large, clear display optimized for warehouse use.
+Print Job Monitor: List of print jobs with status. Failed jobs highlighted. Retry button.
+Box Configuration: CRUD for box definitions. Test box selection with sample weights.
+Settings: Shopify API credentials, webhook secret, default carrier preferences, alert configuration.
+4. Raspberry Pi Print Agent
+4.1 Overview
+A lightweight Python service running on Raspberry Pi. Polls Odoo for print jobs and sends ZPL to the Zebra ZP 505 via USB. Reports success/failure back to Odoo.
+4.2 Hardware Setup
+Raspberry Pi: Any model with USB (Pi 3/4/5 recommended)
+Printer: Zebra ZP 505 connected via USB
+Network: Ethernet or WiFi connection to reach Odoo server
+OS: Raspberry Pi OS Lite (headless)
+4.3 Software Components
+print_agent/
+├── main.py           # Entry point, polling loop
+├── config.py         # Configuration (Odoo URL, API key, printer path)
+├── odoo_client.py    # HTTP client for Odoo API
+├── printer.py        # USB communication with Zebra
+├── requirements.txt  # Python dependencies
+└── print_agent.service  # systemd service file
+4.4 Polling Loop Logic
+while True:
+    jobs = odoo_client.fetch_pending_jobs()
+    for job in jobs:
+        try:
+            printer.send_zpl(job['zpl_data'])
+            odoo_client.mark_complete(job['id'], success=True)
+        except PrinterError as e:
+            odoo_client.mark_complete(job['id'], success=False, error=str(e))
+    sleep(POLL_INTERVAL)  # Default: 5 seconds
+4.5 Zebra USB Communication
+The ZP 505 appears as a USB printer device. On Linux:
+Identify device path: typically /dev/usb/lp0
+Send ZPL directly: write raw bytes to device file
+Alternative: use python-escpos or pyusb library
+# Simple approach
+with open('/dev/usb/lp0', 'wb') as printer:
+    printer.write(zpl_data.encode('utf-8'))
+4.6 Configuration
+# config.py
+ODOO_URL = 'https://your-odoo-server.com'
+ODOO_API_KEY = 'your-api-key-here'
+PRINTER_PATH = '/dev/usb/lp0'
+PRINTER_ID = 'warehouse-1'  # For multi-printer setups
+POLL_INTERVAL = 5  # seconds
+MAX_RETRIES = 3
+4.7 systemd Service
+Run as a system service for automatic startup:
+[Unit]
+Description=Odoo Print Agent
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/print_agent
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+5. Security Considerations
+5.1 Webhook Security
+All Shopify webhooks must be validated using HMAC-SHA256:
+import hmac, hashlib, base64
+
+def validate_shopify_webhook(payload, signature, secret):
+    computed = base64.b64encode(
+        hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+    ).decode()
+    return hmac.compare_digest(computed, signature)
+5.2 Print Agent Authentication
+The Pi authenticates to Odoo using an API key passed in the Authorization header. Generate a dedicated API key in Odoo for the print agent with minimal permissions (read print.job, write print.job status only).
+5.3 Network Security
+All communication over HTTPS
+Pi initiates outbound connections only (no inbound ports required)
+Store API keys in environment variables or Odoo system parameters, never in code
+Consider IP allowlisting for webhook endpoint if Shopify provides static IPs
+6. Implementation Phases
+Phase 1: Foundation
+Create Odoo module skeleton with models
+Implement webhook receiver with HMAC validation
+Build basic order list/form views
+Test webhook reception from Shopify
+Phase 2: Shopify Integration
+Implement Shopify API client
+Build rate shopping logic
+Implement label purchasing
+Test end-to-end label purchase (without printing)
+Phase 3: Box Selection
+Create box model and configuration UI
+Implement box selection algorithm
+Add manual override for edge cases
+Test with various order sizes
+Phase 4: Print System
+Implement ZPL conversion
+Build print job queue
+Create Pi print agent
+Test printing with Zebra ZP 505
+Implement print status reporting
+Phase 5: Dashboard & Polish
+Build kanban order queue
+Create packing slip display
+Implement error handling and alerts
+Add retry mechanisms
+User acceptance testing
+7. Testing Strategy
+Unit Tests: Box selection algorithm, HMAC validation, ZPL generation
+Integration Tests: Shopify API calls (use test store), webhook processing
+End-to-End Tests: Full flow from webhook to printed label
+Load Testing: Simulate high order volume to verify queue handling
+8. Dependencies & Requirements
+8.1 Odoo Module
+Odoo 18 Community or Enterprise
+Python packages: requests, Pillow (for image processing), pdf2image (optional)
+External: Shopify Admin API access, webhook endpoint accessible from internet
+8.2 Raspberry Pi
+Raspberry Pi OS Lite
+Python 3.9+
+Python packages: requests
+USB access permissions for printer device
+8.3 Shopify Requirements
+Shopify plan with Shipping API access
+Private app or custom app with required scopes:
+read_orders, write_orders
+read_shipping, write_shipping
+read_fulfillments, write_fulfillments
+Webhook subscription for orders/create topic
+9. Appendix
+9.1 Sample Shopify Order Webhook Payload
+{
+  "id": 820982911946154508,
+  "order_number": 1001,
+  "name": "#1001",
+  "email": "customer@example.com",
+  "shipping_address": {
+    "first_name": "John",
+    "last_name": "Doe",
+    "address1": "123 Main St",
+    "city": "Dallas",
+    "province_code": "TX",
+    "zip": "75201",
+    "country_code": "US"
+  },
+  "line_items": [
+    {
+      "id": 866550311766439020,
+      "product_id": 632910392,
+      "variant_id": 808950810,
+      "title": "Product Name",
+      "quantity": 2,
+      "sku": "SKU-001",
+      "grams": 500,
+      "requires_shipping": true
+    }
+  ]
+}
+9.2 Sample ZPL Label
+^XA
+^FO50,50^A0N,30,30^FDShip To:^FS
+^FO50,90^A0N,25,25^FDJohn Doe^FS
+^FO50,120^A0N,25,25^FD123 Main St^FS
+^FO50,150^A0N,25,25^FDDallas, TX 75201^FS
+^FO50,200^BY3^BCN,100,Y,N,N^FD1Z999AA10123456784^FS
+^XZ
+— End of Specification —
