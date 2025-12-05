@@ -17,6 +17,16 @@ class Printer:
                 printer.write(zpl_data.encode("utf-8"))
             return True
         except OSError as exc:
-            raise PrinterError(f"Failed to write to printer: {exc}") from exc
+            import os
+            error_msg = f"Failed to write to printer at {self.device_path}: {exc}"
+            
+            # Help debug by listing available usb printers
+            if os.path.exists("/dev/usb"):
+                devices = os.listdir("/dev/usb")
+                error_msg += f"\nAvailable devices in /dev/usb/: {devices}"
+            else:
+                error_msg += "\n/dev/usb/ directory does not exist. Is the printer connected?"
+                
+            raise PrinterError(error_msg) from exc
 
 
