@@ -90,10 +90,21 @@ class ShopifyWebhookController(http.Controller):
             "shipping_zip": shipping.get("zip"),
             "shipping_country": shipping.get("country_code"),
             "shipping_phone": shipping.get("phone"),
-            "created_at": payload.get("created_at"),
+            "created_at": self._parse_date(payload.get("created_at")),
             "raw_payload": json.dumps(payload),
             "line_ids": line_vals,
             "source": source,
         }
+
+    @staticmethod
+    def _parse_date(date_str: str):
+        if not date_str:
+            return False
+        try:
+            from dateutil import parser
+            dt = parser.parse(date_str)
+            return dt.replace(tzinfo=None)  # Odoo expects naive UTC
+        except Exception:
+            return False
 
 

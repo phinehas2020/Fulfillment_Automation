@@ -1,5 +1,6 @@
+import json
 from odoo import http
-from odoo.http import request
+from odoo.http import request, Response
 
 from ..services.shopify_api import ShopifyAPI
 
@@ -7,11 +8,10 @@ from ..services.shopify_api import ShopifyAPI
 class PrintAgentController(http.Controller):
     """Endpoints for Raspberry Pi print agent polling + job completion."""
 
-    @http.route("/print-agent/poll", type="json", auth="public", methods=["GET"])
+    @http.route("/print-agent/poll", type="http", auth="public", methods=["GET"], csrf=False)
     def poll(self, printer_id=None, **kwargs):
-        _ = kwargs
         if not self._is_authorized():
-            return http.Response("Unauthorized", status=401)
+            return Response("Unauthorized", status=401)
 
         domain = [("state", "=", "pending")]
         if printer_id:
@@ -30,20 +30,28 @@ class PrintAgentController(http.Controller):
             }
             for job in jobs
         ]
-        return {"printer_id": printer_id, "jobs": payload}
+        return request.make_response(
+            json.dumps({"printer_id": printer_id, "jobs": payload}),
+            headers=[("Content-Type", "application/json")],
+        )
 
-    @http.route("/print-agent/complete", type="json", auth="public", methods=["POST"])
+    @http.route("/print-agent/complete", type="http", auth="public", methods=["POST"], csrf=False)
     def complete(self, **kwargs):
         if not self._is_authorized():
-            return http.Response("Unauthorized", status=401)
-        payload = request.jsonrequest or {}
+            return Response("Unauthorized", status=401)
+        
+        try:
+            payload = json.loads(request.httprequest.data)
+        except Exception:
+            return Response("Invalid JSON", status=400)
+
         job_id = payload.get("job_id")
         success = payload.get("success", False)
         error_message = payload.get("error_message")
 
         job = request.env["print.job"].sudo().browse(job_id)
         if not job:
-            return http.Response("Job not found", status=404)
+            return Response("Job not found", status=404)
 
         from odoo.fields import Datetime
 
@@ -85,7 +93,10 @@ class PrintAgentController(http.Controller):
                         }
                     )
 
-        return {"status": "ok"}
+        return request.make_response(
+            json.dumps({"status": "ok"}),
+            headers=[("Content-Type", "application/json")],
+        )
 
     @staticmethod
     def _is_authorized() -> bool:
