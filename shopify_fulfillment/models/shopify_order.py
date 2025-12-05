@@ -92,6 +92,7 @@ class ShopifyOrder(models.Model):
         self.box_id = box.id
 
         # Rate Shopping
+        # Import internally to avoid top-level loading issues
         from odoo.addons.shopify_fulfillment.services.shippo_service import ShippoService
         shippo = ShippoService.from_env(self.env)
         
