@@ -137,7 +137,9 @@ class ShopifyAPI:
 
     @staticmethod
     def validate_webhook(payload: bytes, signature: str, secret: str) -> bool:
+        if not signature:
+            return False
         digest = hmac.new(secret.encode(), payload, sha256).digest()
         computed = base64.b64encode(digest).decode()
-
+        return hmac.compare_digest(computed, signature)
 
