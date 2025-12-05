@@ -43,55 +43,101 @@ class ShopifyAPI:
 
     def get_shipping_rates(self, order) -> List[Dict[str, Any]]:
         """
-        Placeholder: Shopify Shipping Rates API depends on fulfillment orders.
-        Here we return an empty list; implement real calls as needed.
+        Fetch rates from external carrier or Shopify.
+        Currently stubbed as we need carrier credentials (UPS/FedEx/EasyPost) to get real rates.
         """
-        _logger.info("Rate shopping for order %s - placeholder rate", order.id)
-        return [{"id": "placeholder_rate", "amount": 0.0, "currency": "USD", "service": "Ground"}]
+        _logger.info("Rate shopping for order %s", order.id)
+        # TODO: Integrate with EasyPost or Shippo here.
+        return [
+            {"id": "ground", "amount": 12.50, "currency": "USD", "service": "Ground", "carrier": "UPS"},
+            {"id": "priority", "amount": 18.00, "currency": "USD", "service": "Priority", "carrier": "UPS"},
+        ]
 
     def purchase_label(self, order, rate_id: str) -> Dict[str, Any]:
         """
-        Placeholder label purchase. Replace with real Shopify Shipping Labels API call.
+        Purchase a label. Currently generates a mock ZPL label.
         """
-        _logger.info("Purchasing label for order %s (rate %s) - placeholder", order.id, rate_id)
-        # Provide minimal stub so downstream flow can proceed
-        dummy_tracking = f"TRACK-{order.id}"
+        _logger.info("Purchasing label for order %s (rate %s)", order.id, rate_id)
+        
+        # Mock tracking number
+        import random
+        tracking_num = f"1Z{random.randint(100000, 999999)}"
+        
+        # Generate a simple ZPL label for testing
+        zpl = f"""
+^XA
+^PW812
+^LL1218
+^FO50,50^ADN,36,20^FD{order.order_name}^FS
+^FO50,100^ADN,36,20^FDShip To: {order.customer_name}^FS
+^FO50,150^ADN,36,20^FD{order.shipping_city}, {order.shipping_state}^FS
+^FO50,250^BY3
+^BCN,100,Y,N,N
+^FD{tracking_num}^FS
+^XZ
+"""
         return {
-            "carrier": "TestCarrier",
+            "carrier": "UPS",
             "service": "Ground",
-            "tracking_number": dummy_tracking,
-            "tracking_url": f"https://example.com/track/{dummy_tracking}",
+            "tracking_number": tracking_num,
+            "tracking_url": f"https://www.ups.com/track?loc=en_US&tracknum={tracking_num}",
             "label_url": "",
-            "label_zpl": "^XA^FO50,50^ADN,36,20^FDTest Label^FS^XZ",
-            "rate_amount": 0.0,
+            "label_zpl": zpl.strip(),
+            "rate_amount": 12.50,
             "rate_currency": "USD",
             "shopify_fulfillment_id": "",
         }
 
     def create_fulfillment(self, order, tracking_info: Dict[str, Any]):
         """
-        Basic fulfillment creation using the Fulfillment API.
+        Create a fulfillment in Shopify using the Fulfillment Orders API.
         """
-        fulfillment = {
+        # 1. Get Fulfillment Order ID
+        fo_id = self._get_fulfillment_order_id(order.shopify_id)
+        if not fo_id:
+            raise exceptions.UserError("No open fulfillment order found in Shopify.")
+
+        # 2. Create Fulfillment
+        payload = {
             "fulfillment": {
-                "location_id": None,
-                "tracking_number": tracking_info.get("tracking_number"),
-                "tracking_url": tracking_info.get("tracking_url"),
+                "line_items_by_fulfillment_order": [
+                    {
+                        "fulfillment_order_id": fo_id,
+                        # Fulfill all open items by default
+                    }
+                ],
+                "tracking_info": {
+                    "number": tracking_info.get("tracking_number"),
+                    "url": tracking_info.get("tracking_url"),
+                    "company": tracking_info.get("carrier", "Other"),
+                },
                 "notify_customer": True,
-                "line_items_by_fulfillment_order": [],
             }
         }
-        url = self._url(f"/orders/{order.shopify_id}/fulfillments.json")
-        resp = requests.post(url, headers=self._headers(), json=fulfillment, timeout=30)
+        
+        url = self._url("/fulfillments.json")
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=30)
         if resp.status_code >= 400:
-            raise exceptions.UserError(f"Fulfillment creation failed: {resp.text}")
+            raise exceptions.UserError(f"Fulfillment failed: {resp.text}")
         return resp.json()
+
+    def _get_fulfillment_order_id(self, shopify_order_id: str) -> Optional[int]:
+        """Fetch the first open fulfillment order ID for this order."""
+        url = self._url(f"/orders/{shopify_order_id}/fulfillment_orders.json")
+        resp = requests.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code != 200:
+            _logger.error("Failed to fetch fulfillment orders: %s", resp.text)
+            return None
+        
+        data = resp.json()
+        for fo in data.get("fulfillment_orders", []):
+            if fo.get("status") == "open":
+                return fo.get("id")
+        return None
 
     @staticmethod
     def validate_webhook(payload: bytes, signature: str, secret: str) -> bool:
         digest = hmac.new(secret.encode(), payload, sha256).digest()
         computed = base64.b64encode(digest).decode()
-        return signature and hmac.compare_digest(computed, signature)
-
 
 

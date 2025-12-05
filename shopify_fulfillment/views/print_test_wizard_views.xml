@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_print_test_wizard_form" model="ir.ui.view">
+        <field name="name">print.test.wizard.form</field>
+        <field name="model">print.test.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Test Printer">
+                <group>
+                    <field name="printer_id"/>
+                </group>
+                <footer>
+                    <button name="action_print_test" string="Print Test Label" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_print_test_wizard" model="ir.actions.act_window">
+        <field name="name">Test Printer</field>
+        <field name="res_model">print.test.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_shopify_test_print" 
+              name="Test Printer" 
+              parent="menu_shopify_root" 
+              action="action_print_test_wizard" 
+              sequence="99"/>
+</odoo>
