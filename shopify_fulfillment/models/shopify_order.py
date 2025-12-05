@@ -91,16 +91,44 @@ class ShopifyOrder(models.Model):
             return
         self.box_id = box.id
 
-        api_client = self._get_shopify_api()
-        rates = api_client.get_shipping_rates(self)
-        if not rates:
-            self.write({"state": "manual_required", "error_message": "No shipping rates returned"})
-            return
-        cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
+        # Rate Shopping
+        from ..services.shippo_service import ShippoService
+        shippo = ShippoService.from_env(self.env)
+        
+        shipment_vals = None
+        
+        if shippo:
+            rates = shippo.get_rates(self, box, self.env.company)
+            if not rates:
+                self.write({"state": "manual_required", "error_message": "Shippo returned no rates"})
+                return
+            # Sort by amount
+            cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
+            shipment_vals = shippo.purchase_label(cheapest)
+        else:
+            # Fallback to Mock
+            api_client = self._get_shopify_api()
+            rates = api_client.get_shipping_rates(self)
+            if not rates:
+                self.write({"state": "manual_required", "error_message": "No shipping rates returned"})
+                return
+            cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
+            shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
 
-        shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
         if not shipment_vals:
             raise exceptions.UserError("Label purchase failed or returned empty data")
+
+        # Push Fulfillment to Shopify
+        api_client = self._get_shopify_api()
+        try:
+            # We only push if we have a valid tracking number
+            if shipment_vals.get("tracking_number"):
+                ff_resp = api_client.create_fulfillment(self, shipment_vals)
+                if ff_resp and ff_resp.get("fulfillment"):
+                    shipment_vals["shopify_fulfillment_id"] = ff_resp["fulfillment"]["id"]
+        except Exception as e:
+            _logger.error("Failed to update Shopify fulfillment: %s", e)
+            # We continue because we still want to save the label and print it
 
         shipment = self.env["fulfillment.shipment"].create(
             {
