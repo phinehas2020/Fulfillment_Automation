@@ -92,7 +92,7 @@ class ShopifyOrder(models.Model):
         self.box_id = box.id
 
         # Rate Shopping
-        from ..services.shippo_service import ShippoService
+        from odoo.addons.shopify_fulfillment.services.shippo_service import ShippoService
         shippo = ShippoService.from_env(self.env)
         
         shipment_vals = None
@@ -178,7 +178,7 @@ class ShopifyOrder(models.Model):
             for b in boxes
         ]
         estimated_volume = self._estimate_volume()
-        from ..services import box_selector
+        from odoo.addons.shopify_fulfillment.services import box_selector
 
         selected_id = box_selector.select_box(data, self.total_weight, estimated_volume)
         if not selected_id:
