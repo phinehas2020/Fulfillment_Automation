@@ -44,7 +44,8 @@ class ShopifyWebhookController(http.Controller):
 
         order_vals = self._prepare_order_vals(payload)
         order = order_model.create(order_vals)
-        order.process_order()
+        # AUTO-PROCESS DISABLED - Uncomment to re-enable automatic fulfillment
+        # order.process_order()
         return {"status": "ok", "order_id": order.id}
 
     @staticmethod
