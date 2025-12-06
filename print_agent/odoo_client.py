@@ -1,6 +1,6 @@
 """HTTP client for communicating with Odoo print job endpoints (skeleton)."""
 
-from typing import List
+from typing import List, Optional
 
 import requests
 
@@ -24,7 +24,7 @@ class OdooClient:
         data = resp.json()
         return data.get("jobs", [])
 
-    def mark_complete(self, job_id: int, success: bool, error: str | None = None):
+    def mark_complete(self, job_id: int, success: bool, error: Optional[str] = None):
         url = f"{self.base_url}/print-agent/complete"
         payload = {"job_id": job_id, "success": success, "error_message": error}
         resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
