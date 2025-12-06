@@ -76,17 +76,33 @@ class ShippoService:
         }
 
         _logger.info("Shippo: Creating shipment for Order %s", order.id)
+        _logger.info("Shippo: From: %s, %s %s", address_from.get("city"), address_from.get("state"), address_from.get("zip"))
+        _logger.info("Shippo: To: %s, %s %s", address_to.get("city"), address_to.get("state"), address_to.get("zip"))
+        _logger.info("Shippo: Parcel: %sx%sx%s in, %s g", parcel["length"], parcel["width"], parcel["height"], parcel["weight"])
         
         try:
             resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            _logger.info("Shippo: Response status: %s", resp.status_code)
+            
             if resp.status_code >= 400:
                 _logger.error("Shippo Error: %s", resp.text)
                 return []
             
             data = resp.json()
-            return data.get("rates", [])
+            rates = data.get("rates", [])
+            messages = data.get("messages", [])
+            
+            _logger.info("Shippo: Got %d rates", len(rates))
+            if messages:
+                _logger.warning("Shippo messages: %s", messages)
+            if rates:
+                for r in rates[:3]:  # Log first 3 rates
+                    _logger.info("  Rate: %s %s - $%s", 
+                                r.get("provider"), r.get("servicelevel", {}).get("name"), r.get("amount"))
+            
+            return rates
         except Exception as e:
-            _logger.exception("Failed to connect to Shippo")
+            _logger.exception("Failed to connect to Shippo: %s", e)
             return []
 
     def purchase_label(self, rate_obj):
