@@ -44,8 +44,15 @@ class ShopifyWebhookController(http.Controller):
 
         order_vals = self._prepare_order_vals(payload)
         order = order_model.create(order_vals)
-        # AUTO-PROCESS DISABLED - Uncomment to re-enable automatic fulfillment
-        # order.process_order()
+        
+        # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
+        auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
+        if auto_process.lower() in ("true", "1", "yes"):
+            order.process_order()
+            _logger.info("Order %s auto-processed", order.id)
+        else:
+            _logger.info("Order %s created (auto-process disabled)", order.id)
+            
         return {"status": "ok", "order_id": order.id}
 
     @staticmethod
