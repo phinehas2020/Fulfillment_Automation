@@ -122,6 +122,15 @@ class ShopifyOrder(models.Model):
             order.total_weight = total_weight
             order.total_items = total_items
 
+    def action_sync_status(self):
+        """Manual action to sync status from Shopify."""
+        # Use existing logic but ensure we force it
+        try:
+             # The existing private method handles batching self, but if called from action, self contains selected records
+             self._sync_shopify_status()
+        except Exception as e:
+            raise exceptions.UserError(f"Sync failed: {e}")
+
     def action_process(self):
         for order in self:
             order.process_order()
