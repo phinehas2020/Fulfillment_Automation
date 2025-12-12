@@ -46,15 +46,7 @@
                     </group>
                     <notebook>
                         <page string="Lines">
-                            <field name="line_ids">
-                                <tree editable="bottom">
-                                    <field name="sku"/>
-                                    <field name="title"/>
-                                    <field name="quantity"/>
-                                    <field name="weight"/>
-                                    <field name="requires_shipping"/>
-                                </tree>
-                            </field>
+                            <field name="line_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_shopify_order_line_inline_tree'}"/>
                         </page>
                         <page string="Shipment">
                             <group>
@@ -63,14 +55,7 @@
                             </group>
                         </page>
                         <page string="Print Jobs">
-                            <field name="print_job_ids">
-                                <tree>
-                                    <field name="job_type"/>
-                                    <field name="state"/>
-                                    <field name="attempts"/>
-                                    <field name="printer_id"/>
-                                </tree>
-                            </field>
+                            <field name="print_job_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_print_job_tree'}"/>
                         </page>
                         <page string="Raw Payload">
                             <field name="raw_payload" nolabel="1" readonly="1"/>
@@ -98,6 +83,20 @@
         <field name="state">code</field>
         <field name="code">
             action = records.action_sync_status()
+        </field>
+    </record>
+
+    <record id="view_shopify_order_line_inline_tree" model="ir.ui.view">
+        <field name="name">shopify.order.line.inline.tree</field>
+        <field name="model">shopify.order.line</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="sku"/>
+                <field name="title"/>
+                <field name="quantity"/>
+                <field name="weight"/>
+                <field name="requires_shipping"/>
+            </list>
         </field>
     </record>
 </odoo>
