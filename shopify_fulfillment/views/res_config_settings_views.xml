@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.shopify</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="Shopify Fulfillment" string="Shopify Fulfillment" name="shopify_fulfillment">
+                    <block title="Shopify Configuration" name="shopify_config">
+                        <setting id="shopify_credentials" string="Credentials">
+                            <div class="row mt16">
+                                <label for="shopify_shop_domain" class="col-lg-3 o_light_label"/>
+                                <field name="shopify_shop_domain" placeholder="e.g. mystore.myshopify.com"/>
+                            </div>
+                            <div class="row mt16">
+                                <label for="shopify_api_key" class="col-lg-3 o_light_label"/>
+                                <field name="shopify_api_key" password="True"/>
+                            </div>
+                            <div class="row mt16">
+                                <label for="shopify_webhook_secret" class="col-lg-3 o_light_label"/>
+                                <field name="shopify_webhook_secret" password="True"/>
+                            </div>
+                        </setting>
+                    </block>
+                    <block title="Shippo Configuration" name="shippo_config">
+                        <setting id="shippo_credentials" string="API Keys">
+                            <div class="row mt16">
+                                <label for="shippo_api_key" class="col-lg-3 o_light_label"/>
+                                <field name="shippo_api_key" password="True"/>
+                            </div>
+                        </setting>
+                    </block>
+                    <block title="Automation" name="automation_config">
+                         <setting id="auto_process" string="Workflow">
+                            <div class="row mt16">
+                                <field name="fulfillment_auto_process"/>
+                                <label for="fulfillment_auto_process"/>
+                            </div>
+                         </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_shopify_config_settings" model="ir.actions.act_window">
+        <field name="name">Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+        <field name="context">{'module': 'shopify_fulfillment'}</field>
+    </record>
+</odoo>

@@ -16,6 +16,7 @@
         "views/fulfillment_box_views.xml",
         "views/print_job_views.xml",
         "views/print_test_wizard_views.xml",
+        "views/res_config_settings_views.xml",
         "views/menu.xml",
     ],
     "description": """
