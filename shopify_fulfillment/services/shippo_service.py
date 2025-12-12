@@ -137,8 +137,14 @@ class ShippoService:
                         status, label_file_type, label_url)
             
             if status != "SUCCESS":
-                _logger.error("Shippo Transaction status: %s Messages: %s", status, data.get("messages"))
-                return None
+                messages = data.get("messages", [])
+                error_msg = "Unknown error"
+                if messages and isinstance(messages, list):
+                    # Shippo messages often look like [{'text': '...', ...}]
+                    error_msg = "; ".join([m.get("text", str(m)) for m in messages])
+                
+                _logger.error("Shippo Transaction status: %s Messages: %s", status, messages)
+                return {"error": error_msg}
             
             zpl_data = None
             

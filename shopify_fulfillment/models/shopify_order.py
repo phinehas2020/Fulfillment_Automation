@@ -189,7 +189,13 @@ class ShopifyOrder(models.Model):
             shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
 
         if not shipment_vals:
-            raise exceptions.UserError("Label purchase failed or returned empty data")
+             # Generic failure
+            raise exceptions.UserError("Label purchase failed (unknown error)")
+            
+        if shipment_vals.get("error"):
+            # Specific failure from provider
+            self.write({"state": "error", "error_message": shipment_vals["error"]})
+            return
 
         # Push Fulfillment to Shopify
         api_client = self._get_shopify_api()
