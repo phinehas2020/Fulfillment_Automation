@@ -135,6 +135,25 @@ class ShopifyAPI:
                 return fo.get("id")
         return None
 
+    def get_orders(self, shopify_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch multiple orders by Shopify ID.
+        """
+        if not shopify_ids:
+            return []
+            
+        # Shopify allows fetching by IDs using comma-separated list
+        # We need to chunk it if it's too large, but for now we assume < 50 items
+        ids_str = ",".join(shopify_ids)
+        url = self._url(f"/orders.json?ids={ids_str}&status=any")
+        
+        resp = requests.get(url, headers=self._headers(), timeout=30)
+        if resp.status_code != 200:
+            _logger.error("Failed to fetch orders: %s", resp.text)
+            return []
+            
+        return resp.json().get("orders", [])
+
     @staticmethod
     def validate_webhook(payload: bytes, signature: str, secret: str) -> bool:
         if not signature:

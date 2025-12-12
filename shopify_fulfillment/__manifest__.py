@@ -6,6 +6,7 @@
     "author": "Your Company",
     "website": "",
     "depends": ["base"],
+    "external_dependencies": {"python": ["requests", "dateutil"]},
     "application": True,
     "data": [
         "security/ir.model.access.csv",

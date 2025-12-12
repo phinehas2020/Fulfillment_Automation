@@ -43,8 +43,71 @@ class ShopifyOrder(models.Model):
     shipment_id = fields.Many2one("fulfillment.shipment", string="Shipment")
     print_job_ids = fields.One2many("print.job", "order_id", string="Print Jobs")
     box_id = fields.Many2one("fulfillment.box", string="Selected Box")
+    active = fields.Boolean(default=True)
     created_at = fields.Datetime()
     raw_payload = fields.Text()
+
+    def read(self, fields=None, load="_classic_read"):
+        """Override read to sync status from Shopify on load."""
+        if not self.env.context.get("shopify_sync_done") and (fields is None or "state" in fields):
+            try:
+                # Avoid syncing if we are purely in a computation loop or low-level access
+                # But here we want to catch the view load.
+                self.with_context(shopify_sync_done=True)._sync_shopify_status()
+            except Exception as e:
+                _logger.warning("Failed to sync Shopify status on read: %s", e)
+        return super().read(fields=fields, load=load)
+
+    def _sync_shopify_status(self):
+        """Fetch latest status from Shopify and update local state."""
+        # Identify records that need syncing
+        # We only sync records that have a shopify_id and are not already archived (though self should be active usually)
+        # We process in batches
+        records_to_sync = self.filtered(lambda r: r.shopify_id and r.active)
+        if not records_to_sync:
+            return
+
+        api = self._get_shopify_api()
+        
+        # Batch by 50
+        batch_size = 50
+        record_list = list(records_to_sync)
+        for i in range(0, len(record_list), batch_size):
+            batch = record_list[i : i + batch_size]
+            shopify_ids = [r.shopify_id for r in batch]
+            
+            try:
+                shopify_orders = api.get_orders(shopify_ids)
+                self._update_local_orders(batch, shopify_orders)
+            except Exception as e:
+                _logger.error("Error syncing batch: %s", e)
+
+    def _update_local_orders(self, batch_records, shopify_data):
+        """Update records based on Shopify data."""
+        data_map = {str(order["id"]): order for order in shopify_data}
+        
+        for record in batch_records:
+            data = data_map.get(record.shopify_id)
+            if not data:
+                continue
+            
+            ff_status = data.get("fulfillment_status")
+            financial_status = data.get("financial_status")
+            
+            # Logic: If fulfilled, remove from Odoo (archive)
+            # fulfillment_status can be: null, fulfilled, partial, restocked
+            if ff_status == "fulfilled":
+                record.active = False
+            elif ff_status == "partial":
+                 # Keep it, maybe update state?
+                 pass
+            elif ff_status is None:
+                # Unfulfilled
+                pass
+            
+            # Additional Sync: If cancelled, maybe archive too?
+            if data.get("cancelled_at"):
+                record.active = False
 
     def _get_shopify_api(self):
         from ..services.shopify_api import ShopifyAPI
