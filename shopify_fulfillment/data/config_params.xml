@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<odoo noupdate="0">
+<odoo noupdate="1">
     <!-- Auto-process toggle: Set to "True" to enable automatic order processing -->
     <record id="fulfillment_auto_process" model="ir.config_parameter">
         <field name="key">fulfillment.auto_process</field>
