@@ -36,6 +36,12 @@ class ShopifyWebhookController(http.Controller):
             return http.Response("Invalid signature", status=401)
 
         payload = json.loads(raw_body.decode("utf-8"))
+        
+        # Skip POS orders
+        if payload.get("source_name") == "pos":
+            _logger.info("Skipping POS order %s (source_name=pos)", payload.get("id"))
+            return {"status": "skipped", "reason": "pos_order"}
+
         order_model = request.env["shopify.order"].sudo()
 
         existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
