@@ -7,11 +7,12 @@
             <list>
                 <field name="order_id"/>
                 <field name="job_type"/>
-                <field name="state"/>
+                <field name="state" widget="badge" decoration-success="state == 'completed'" decoration-info="state == 'printing'" decoration-danger="state == 'failed'"/>
                 <field name="attempts"/>
                 <field name="printer_id"/>
                 <field name="created_at"/>
                 <field name="completed_at"/>
+                <button name="action_retry" type="object" string="Retry" icon="fa-refresh" invisible="state != 'failed'"/>
             </list>
         </field>
     </record>
@@ -21,12 +22,15 @@
         <field name="model">print.job</field>
         <field name="arch" type="xml">
             <form>
+                <header>
+                    <button name="action_retry" type="object" string="Retry" class="btn-primary" invisible="state != 'failed'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
                 <sheet>
                     <group>
                         <field name="order_id"/>
                         <field name="shipment_id"/>
                         <field name="job_type"/>
-                        <field name="state"/>
                         <field name="attempts"/>
                         <field name="printer_id"/>
                         <field name="zpl_data" widget="text"/>

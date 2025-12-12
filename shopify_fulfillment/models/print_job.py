@@ -21,5 +21,14 @@ class PrintJob(models.Model):
     created_at = fields.Datetime(default=fields.Datetime.now)
     completed_at = fields.Datetime()
 
+    def action_retry(self):
+        """Reset failed jobs to pending."""
+        for job in self:
+            job.write({
+                "state": "pending",
+                "attempts": 0,
+                "error_message": False
+            })
+
 
 
