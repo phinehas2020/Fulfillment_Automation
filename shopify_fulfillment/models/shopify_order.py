@@ -156,6 +156,24 @@ class ShopifyOrder(models.Model):
 
         self.write({"state": "processing"})
 
+        self.write({"state": "processing"})
+
+        # Check if shipment already exists to avoid re-purchasing
+        shipment = self.shipment_id
+        if shipment:
+             # Just create a print job and skip rate shopping
+             self.env["print.job"].create(
+                 {
+                     "order_id": self.id,
+                     "shipment_id": shipment.id,
+                     "job_type": "label",
+                     "zpl_data": shipment.label_zpl or "",
+                     "printer_id": False,
+                 }
+             )
+             self.write({"state": "ready_to_ship"})
+             return
+
         # Box selection
         box = self._select_box()
         if not box:
