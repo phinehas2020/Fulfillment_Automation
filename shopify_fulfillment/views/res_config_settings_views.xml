@@ -44,11 +44,4 @@
         </field>
     </record>
 
-    <record id="action_shopify_config_settings" model="ir.actions.act_window">
-        <field name="name">Settings</field>
-        <field name="res_model">res.config.settings</field>
-        <field name="view_mode">form</field>
-        <field name="target">inline</field>
-        <field name="context">{'module': 'shopify_fulfillment'}</field>
-    </record>
 </odoo>
