@@ -39,6 +39,14 @@
                             </div>
                          </setting>
                     </block>
+                    <block title="Print Agent" name="agent_config">
+                         <setting id="agent_key" string="Agent Security">
+                            <div class="row mt16">
+                                <label for="print_agent_api_key" class="col-lg-3 o_light_label"/>
+                                <field name="print_agent_api_key"/>
+                            </div>
+                         </setting>
+                    </block>
                 </app>
             </xpath>
         </field>

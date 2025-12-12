@@ -8,3 +8,4 @@ class ResConfigSettings(models.TransientModel):
     shopify_webhook_secret = fields.Char(config_parameter='shopify.webhook_secret', string="Webhook Secret")
     shippo_api_key = fields.Char(config_parameter='shippo.api_key', string="Shippo API Token")
     fulfillment_auto_process = fields.Boolean(config_parameter='fulfillment.auto_process', string="Auto-Process Orders")
+    print_agent_api_key = fields.Char(config_parameter='print_agent.api_key', string="Print Agent Key", default="homestead-printer-2025")
