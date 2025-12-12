@@ -1,32 +1,79 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo noupdate="1">
-    <record id="box_small" model="fulfillment.box">
-        <field name="name">Small Box</field>
-        <field name="length">8</field>
-        <field name="width">6</field>
-        <field name="height">4</field>
-        <field name="max_weight">32</field>
-        <field name="box_weight">2</field>
+    <!-- 11x8x5 5 pound -->
+    <record id="box_11x8x5" model="fulfillment.box">
+        <field name="name">11x8x5 Box (5lb)</field>
+        <field name="length">11</field>
+        <field name="width">8</field>
+        <field name="height">5</field>
+        <field name="max_weight">80</field> <!-- 5 lbs * 16 -->
+        <field name="box_weight">3</field>
         <field name="priority">10</field>
     </record>
-    <record id="box_medium" model="fulfillment.box">
-        <field name="name">Medium Box</field>
+
+    <!-- 12x12x6 10 pound -->
+    <record id="box_12x12x6" model="fulfillment.box">
+        <field name="name">12x12x6 Box (10lb)</field>
         <field name="length">12</field>
-        <field name="width">10</field>
+        <field name="width">12</field>
         <field name="height">6</field>
-        <field name="max_weight">64</field>
-        <field name="box_weight">4</field>
+        <field name="max_weight">160</field> <!-- 10 lbs * 16 -->
+        <field name="box_weight">5</field>
         <field name="priority">20</field>
     </record>
-    <record id="box_large" model="fulfillment.box">
-        <field name="name">Large Box</field>
-        <field name="length">16</field>
+
+    <!-- 12x12x8 20 pound -->
+    <record id="box_12x12x8" model="fulfillment.box">
+        <field name="name">12x12x8 Box (20lb)</field>
+        <field name="length">12</field>
         <field name="width">12</field>
         <field name="height">8</field>
-        <field name="max_weight">128</field>
-        <field name="box_weight">6</field>
+        <field name="max_weight">320</field> <!-- 20 lbs * 16 -->
+        <field name="box_weight">7</field>
         <field name="priority">30</field>
     </record>
+
+    <!-- 12x12x12 40 pound dense products -->
+    <record id="box_12x12x12" model="fulfillment.box">
+        <field name="name">12x12x12 Dense (40lb)</field>
+        <field name="length">12</field>
+        <field name="width">12</field>
+        <field name="height">12</field>
+        <field name="max_weight">640</field> <!-- 40 lbs * 16 -->
+        <field name="box_weight">10</field>
+        <field name="priority">40</field>
+    </record>
+
+    <!-- 12x12x14 40 pound flour, cornmeal -->
+    <record id="box_12x12x14" model="fulfillment.box">
+        <field name="name">12x12x14 Flour (40lb)</field>
+        <field name="length">12</field>
+        <field name="width">12</field>
+        <field name="height">14</field>
+        <field name="max_weight">640</field> <!-- 40 lbs * 16 -->
+        <field name="box_weight">12</field>
+        <field name="priority">50</field>
+    </record>
+
+    <!-- 12x12x18 60 pound dense -->
+    <record id="box_12x12x18" model="fulfillment.box">
+        <field name="name">12x12x18 Dense (60lb)</field>
+        <field name="length">12</field>
+        <field name="width">12</field>
+        <field name="height">18</field>
+        <field name="max_weight">960</field> <!-- 60 lbs * 16 -->
+        <field name="box_weight">16</field>
+        <field name="priority">60</field>
+    </record>
+
+    <!-- 12x12x20 60 pound flour, cornmeal -->
+    <record id="box_12x12x20" model="fulfillment.box">
+        <field name="name">12x12x20 Flour (60lb)</field>
+        <field name="length">12</field>
+        <field name="width">12</field>
+        <field name="height">20</field>
+        <field name="max_weight">960</field> <!-- 60 lbs * 16 -->
+        <field name="box_weight">18</field>
+        <field name="priority">70</field>
+    </record>
 </odoo>
-
-
