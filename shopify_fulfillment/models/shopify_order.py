@@ -161,19 +161,21 @@ class ShopifyOrder(models.Model):
                         # Strategy 1: Use Variant ID if exists
                         if line.shopify_variant_id:
                             variant = api_client.get_product_variant(line.shopify_variant_id)
+                            if variant:
+                                weight_g = variant.get("grams") or 0.0
+                                if weight_g:
+                                    line.write({"weight": weight_g})
+                                    fixed_count += 1
+                                    continue # Success, move to next line
 
-                        # Strategy 2: If no variant ID, fetch by Product ID and take first variant
-                        if not variant and line.shopify_product_id:
-                             # We'll need a new method in API or just fetch product and grab first variant
-                             # For now, let's assume we can fetch product
-                             # Adding get_product to ShopifyAPI might be needed, but let's see if we can hack it
-                             pass
-                        
-                        if variant:
-                            weight_g = variant.get("grams") or 0.0
-                            if weight_g:
-                                line.write({"weight": weight_g})
-                                fixed_count += 1
+                        # Strategy 2: If failed or no ID, lookup by SKU
+                        if line.sku:
+                             _logger.info("Validation: Fetching weight by SKU %s match...", line.sku)
+                             weight_g = api_client.get_weight_by_sku(line.sku)
+                             if weight_g:
+                                 _logger.info("Found weight by SKU: %s", weight_g)
+                                 line.write({"weight": weight_g})
+                                 fixed_count += 1
                 
                 if fixed_count > 0:
                     self._compute_totals() # Force recompute

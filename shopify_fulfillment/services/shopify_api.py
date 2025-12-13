@@ -171,7 +171,50 @@ class ShopifyAPI:
                 return resp.json().get("variant")
             else:
                 _logger.warning("Failed to fetch variant %s: %s", variant_id, resp.status_code)
+    def graphql_query(self, query: str) -> Dict[str, Any]:
+        """Execute a GraphQL query."""
+        url = self._url("/graphql.json")
+        try:
+            resp = requests.post(url, headers=self._headers(), json={"query": query}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                _logger.error("GraphQL query failed: %s", resp.text)
         except Exception as e:
-            _logger.error("Error fetching variant %s: %s", variant_id, e)
-        return None
+            _logger.exception("GraphQL request error: %s", e)
+        return {}
+
+    def get_weight_by_sku(self, sku: str) -> float:
+        """Fetch weight in grams for a given SKU using GraphQL."""
+        query = """
+        {
+          productVariants(first: 1, query: "sku:%s") {
+            edges {
+              node {
+                weight
+                weightUnit
+              }
+            }
+          }
+        }
+        """ % sku
+        data = self.graphql_query(query)
+        try:
+            edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
+            if edges:
+                node = edges[0]["node"]
+                weight = node["weight"]
+                unit = node["weightUnit"]
+                # Convert to grams
+                if unit == "KILOGRAMS":
+                    return weight * 1000.0
+                elif unit == "GRAMS":
+                    return weight
+                elif unit == "POUNDS":
+                    return weight * 453.592
+                elif unit == "OUNCES":
+                    return weight * 28.3495
+        except Exception as e:
+            _logger.error("Failed to parse weight from GraphQL response: %s", e)
+        return 0.0
 
