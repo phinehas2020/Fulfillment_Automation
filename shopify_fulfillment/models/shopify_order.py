@@ -177,7 +177,9 @@ class ShopifyOrder(models.Model):
         # Box selection
         box = self._select_box()
         if not box:
-            self.write({"state": "manual_required", "error_message": "No box fits order"})
+            msg = f"No box fits order. Total Weight: {self.total_weight}g"
+            _logger.warning("Order %s: %s", self.id, msg)
+            self.write({"state": "manual_required", "error_message": msg})
             return
         self.box_id = box.id
 
@@ -191,7 +193,9 @@ class ShopifyOrder(models.Model):
         if shippo:
             rates = shippo.get_rates(self, box, self.env.company)
             if not rates:
-                self.write({"state": "manual_required", "error_message": "Shippo returned no rates"})
+                msg = "Shippo returned no rates (Check address/credentials)"
+                _logger.warning("Order %s: %s", self.id, msg)
+                self.write({"state": "manual_required", "error_message": msg})
                 return
             # Sort by amount
             cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
@@ -201,7 +205,9 @@ class ShopifyOrder(models.Model):
             api_client = self._get_shopify_api()
             rates = api_client.get_shipping_rates(self)
             if not rates:
-                self.write({"state": "manual_required", "error_message": "No shipping rates returned"})
+                msg = "Mock API returned no rates"
+                _logger.warning("Order %s: %s", self.id, msg)
+                self.write({"state": "manual_required", "error_message": msg})
                 return
             cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
             shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
