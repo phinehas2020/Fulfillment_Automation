@@ -267,6 +267,9 @@ class ShopifyOrder(models.Model):
         if not boxes:
             return None
 
+        # Basic heuristic: assume density ~ 9 g per cubic inch (approx for flour/grains)
+        estimated_volume = self.total_weight / 9.0 if self.total_weight else 0
+
         data = [
             {
                 "id": b.id,
@@ -280,19 +283,20 @@ class ShopifyOrder(models.Model):
             }
             for b in boxes
         ]
-        estimated_volume = self._estimate_volume()
+        
         from odoo.addons.shopify_fulfillment.services import box_selector
-
         selected_id = box_selector.select_box(data, self.total_weight, estimated_volume)
+        
         if not selected_id:
+            msg = f"No box fits. Wt: {self.total_weight}g, Est.Vol: {int(estimated_volume)}in³"
+            _logger.warning("Order %s: %s", self.id, msg)
+            self.write({"state": "manual_required", "error_message": msg})
             return None
+            
         return boxes.browse(selected_id)
 
     def _estimate_volume(self) -> float:
-        # Basic heuristic: assume density ~ 5 g per cubic inch if no better data.
+        # Deprecated: logic moved inside _select_box for now.
         if self.total_weight:
-            return max(self.total_weight / 5.0, 1.0)
+            return max(self.total_weight / 9.0, 1.0)
         return 1.0
-
-
-
