@@ -11,7 +11,6 @@
     "data": [
         "security/ir.model.access.csv",
         "data/config_params.xml",
-        "data/api_key.xml",
         "data/default_boxes.xml",
         "views/shopify_order_views.xml",
         "views/fulfillment_box_views.xml",
