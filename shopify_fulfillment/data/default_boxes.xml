@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<odoo noupdate="1">
+<odoo noupdate="0">
     <!-- 11x8x5 5 pound -->
     <record id="box_11x8x5" model="fulfillment.box">
         <field name="name">11x8x5 Box (5lb)</field>
