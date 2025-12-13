@@ -162,3 +162,16 @@ class ShopifyAPI:
         computed = base64.b64encode(digest).decode()
         return hmac.compare_digest(computed, signature)
 
+    def get_product_variant(self, variant_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch variant details to recover missing weight."""
+        url = self._url(f"/variants/{variant_id}.json")
+        try:
+            resp = requests.get(url, headers=self._headers(), timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get("variant")
+            else:
+                _logger.warning("Failed to fetch variant %s: %s", variant_id, resp.status_code)
+        except Exception as e:
+            _logger.error("Error fetching variant %s: %s", variant_id, e)
+        return None
+

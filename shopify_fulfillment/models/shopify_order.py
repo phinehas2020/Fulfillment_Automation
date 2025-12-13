@@ -149,9 +149,26 @@ class ShopifyOrder(models.Model):
         if not self.line_ids:
             raise exceptions.UserError("Order has no line items")
 
-        # Basic validation: weights present
+        # Auto-recover missing weights from Shopify
         if any(l.requires_shipping and not l.weight for l in self.line_ids):
-            self.write({"state": "manual_required", "error_message": "Missing weight on one or more items"})
+            api_client = self._get_shopify_api()
+            fixed_count = 0
+            for line in self.line_ids:
+                if line.requires_shipping and not line.weight and line.shopify_variant_id:
+                    _logger.info("Validation: Line has 0 weight. Fetching variant %s from Shopify...", line.shopify_variant_id)
+                    variant = api_client.get_product_variant(line.shopify_variant_id)
+                    if variant:
+                        weight_g = variant.get("grams") or 0.0
+                        if weight_g:
+                            line.write({"weight": weight_g})
+                            fixed_count += 1
+            
+            if fixed_count > 0:
+                self._compute_totals() # Force recompute
+            
+        # Basic validation: weights present (check again after recovery attempt)
+        if any(l.requires_shipping and not l.weight for l in self.line_ids):
+            self.write({"state": "manual_required", "error_message": "Missing weight on one or more items (Fetch failed)"})
             return
 
         self.write({"state": "processing"})
