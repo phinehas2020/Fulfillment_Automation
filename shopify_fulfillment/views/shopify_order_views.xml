@@ -27,6 +27,9 @@
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
+                    <div class="alert alert-danger" role="alert" invisible="not error_message">
+                        <field name="error_message"/>
+                    </div>
                     <group>
                         <field name="order_name"/>
                         <field name="order_number"/>
