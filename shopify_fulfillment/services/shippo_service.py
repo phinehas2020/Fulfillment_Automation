@@ -8,17 +8,19 @@ _logger = logging.getLogger(__name__)
 class ShippoService:
     API_URL = "https://api.goshippo.com"
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, shipper_phone: str = None):
         self.api_key = api_key
+        self.shipper_phone = shipper_phone or "555-555-5555"
 
     @classmethod
     def from_env(cls, env):
         ICP = env["ir.config_parameter"].sudo()
         api_key = ICP.get_param("shippo.api_key")
+        shipper_phone = ICP.get_param("shippo.shipper_phone")
         # Return None if not configured, allowing caller to handle fallback
         if not api_key:
             return None
-        return cls(api_key)
+        return cls(api_key, shipper_phone)
 
     def _headers(self):
         return {
@@ -51,7 +53,7 @@ class ShippoService:
             "state": sender_company.state_id.code if sender_company.state_id else "",
             "zip": sender_company.zip or "",
             "country": sender_company.country_id.code if sender_company.country_id else "US",
-            "phone": sender_company.phone or "",
+            "phone": sender_company.phone or self.shipper_phone,
             "email": sender_company.email or "no-reply@example.com",
         }
 

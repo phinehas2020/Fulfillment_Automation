@@ -29,6 +29,10 @@
                                 <label for="shippo_api_key" class="col-lg-3 o_light_label"/>
                                 <field name="shippo_api_key" password="True"/>
                             </div>
+                            <div class="row mt16">
+                                <label for="shipper_phone" class="col-lg-3 o_light_label"/>
+                                <field name="shipper_phone" placeholder="e.g. +1 555-555-5555"/>
+                            </div>
                         </setting>
                     </block>
                     <block title="Automation" name="automation_config">
