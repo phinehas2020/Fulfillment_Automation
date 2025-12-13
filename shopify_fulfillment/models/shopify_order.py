@@ -149,22 +149,34 @@ class ShopifyOrder(models.Model):
         if not self.line_ids:
             raise exceptions.UserError("Order has no line items")
 
-        # Auto-recover missing weights from Shopify
-        if any(l.requires_shipping and not l.weight for l in self.line_ids):
-            api_client = self._get_shopify_api()
-            fixed_count = 0
-            for line in self.line_ids:
-                if line.requires_shipping and not line.weight and line.shopify_variant_id:
-                    _logger.info("Validation: Line has 0 weight. Fetching variant %s from Shopify...", line.shopify_variant_id)
-                    variant = api_client.get_product_variant(line.shopify_variant_id)
-                    if variant:
-                        weight_g = variant.get("grams") or 0.0
-                        if weight_g:
-                            line.write({"weight": weight_g})
-                            fixed_count += 1
-            
-            if fixed_count > 0:
-                self._compute_totals() # Force recompute
+            # Auto-recover missing weights from Shopify
+            if any(l.requires_shipping and not l.weight for l in self.line_ids):
+                api_client = self._get_shopify_api()
+                fixed_count = 0
+                for line in self.line_ids:
+                    if line.requires_shipping and not line.weight:
+                        _logger.info("Validation: Line has 0 weight. Fetching details for Line %s...", line.id)
+                        
+                        variant = None
+                        # Strategy 1: Use Variant ID if exists
+                        if line.shopify_variant_id:
+                            variant = api_client.get_product_variant(line.shopify_variant_id)
+
+                        # Strategy 2: If no variant ID, fetch by Product ID and take first variant
+                        if not variant and line.shopify_product_id:
+                             # We'll need a new method in API or just fetch product and grab first variant
+                             # For now, let's assume we can fetch product
+                             # Adding get_product to ShopifyAPI might be needed, but let's see if we can hack it
+                             pass
+                        
+                        if variant:
+                            weight_g = variant.get("grams") or 0.0
+                            if weight_g:
+                                line.write({"weight": weight_g})
+                                fixed_count += 1
+                
+                if fixed_count > 0:
+                    self._compute_totals() # Force recompute
             
         # Basic validation: weights present (check again after recovery attempt)
         if any(l.requires_shipping and not l.weight for l in self.line_ids):
