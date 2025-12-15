@@ -61,12 +61,18 @@ class ShippoService:
         # Odoo stores weight in grams (from our shopify_order model)
         # Box dimensions in our system are typically inches. 
         # API expects: weight in 'g', 'oz', 'lb', 'kg'. distance_unit in 'in', 'cm', 'mm', 'm', 'yd'.
+        # Box weight is in Ounces, Order weight is in Grams.
+        # We need to add them together.
+        box_weight_oz = box.box_weight or 0.0
+        box_weight_g = box_weight_oz * 28.3495
+        total_weight_g = (order.total_weight or 0.0) + box_weight_g
+
         parcel = {
             "length": box.length,
             "width": box.width,
             "height": box.height,
             "distance_unit": "in",
-            "weight": order.total_weight,
+            "weight": total_weight_g,
             "mass_unit": "g",
         }
 
