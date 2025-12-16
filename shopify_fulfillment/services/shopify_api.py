@@ -171,6 +171,9 @@ class ShopifyAPI:
                 return resp.json().get("variant")
             else:
                 _logger.warning("Failed to fetch variant %s: %s", variant_id, resp.status_code)
+        except Exception as e:
+            _logger.warning("Error fetching variant %s: %s", variant_id, e)
+        return None
     def graphql_query(self, query: str) -> Dict[str, Any]:
         """Execute a GraphQL query."""
         url = self._url("/graphql.json")
