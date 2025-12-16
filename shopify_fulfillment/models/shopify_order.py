@@ -46,6 +46,7 @@ class ShopifyOrder(models.Model):
     active = fields.Boolean(default=True)
     created_at = fields.Datetime()
     raw_payload = fields.Text()
+    requested_shipping_method = fields.Char(string="Requested Shipping Method")
 
     def read(self, fields=None, load="_classic_read"):
         """Override read to sync status from Shopify on load."""
@@ -230,7 +231,32 @@ class ShopifyOrder(models.Model):
                 return
             # Sort by amount
             cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
-            shipment_vals = shippo.purchase_label(cheapest)
+            
+            selected_rate = cheapest
+            if self.requested_shipping_method:
+                _logger.info("Order %s: User requested shipping '%s'", self.id, self.requested_shipping_method)
+                # Try to find a match
+                # User said "ill set up all they same carriors" -> implying exact name match
+                req_norm = self.requested_shipping_method.strip().lower()
+                
+                # First pass: Look for exact match in servicelevel name
+                found = None
+                for r in rates:
+                    s_name = r.get("servicelevel", {}).get("name", "").strip().lower()
+                    if s_name == req_norm:
+                        found = r
+                        break
+                
+                if found:
+                    selected_rate = found
+                    _logger.info("Order %s: Found matching rate for '%s': %s - $%s", 
+                                 self.id, self.requested_shipping_method, 
+                                 found.get("servicelevel", {}).get("name"), found.get("amount"))
+                else:
+                    _logger.warning("Order %s: Requested shipping '%s' not found in rates. Using cheapest.", 
+                                    self.id, self.requested_shipping_method)
+
+            shipment_vals = shippo.purchase_label(selected_rate)
         else:
             # Fallback to Mock
             api_client = self._get_shopify_api()

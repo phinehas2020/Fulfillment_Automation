@@ -38,6 +38,7 @@
                         <field name="created_at"/>
                     </group>
                     <group string="Shipping">
+                        <field name="requested_shipping_method"/>
                         <field name="customer_name"/>
                         <field name="shipping_phone"/>
                         <field name="shipping_address_line1"/>

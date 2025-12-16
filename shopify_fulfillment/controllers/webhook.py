@@ -91,6 +91,10 @@ class ShopifyWebhookController(http.Controller):
                 )
             )
         source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
+        
+        shipping_lines = payload.get("shipping_lines") or []
+        requested_method = shipping_lines[0].get("title") if shipping_lines else False
+        
         return {
             "shopify_id": str(payload.get("id")),
             "order_number": payload.get("order_number"),
@@ -108,6 +112,7 @@ class ShopifyWebhookController(http.Controller):
             "raw_payload": json.dumps(payload),
             "line_ids": line_vals,
             "source": source,
+            "requested_shipping_method": requested_method,
         }
 
     @staticmethod
