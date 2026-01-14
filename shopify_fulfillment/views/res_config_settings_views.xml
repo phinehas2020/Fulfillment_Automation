@@ -8,7 +8,7 @@
             <xpath expr="//form" position="inside">
                 <app data-string="Shopify Fulfillment" string="Shopify Fulfillment" name="shopify_fulfillment">
                     <block title="Shopify Configuration" name="shopify_config">
-                        <setting id="shopify_credentials" string="Credentials">
+                        <setting id="shopify_credentials" string="API Credentials" help="Your Shopify store credentials for API access">
                             <div class="row mt16">
                                 <label for="shopify_shop_domain" class="col-lg-3 o_light_label"/>
                                 <field name="shopify_shop_domain" placeholder="e.g. mystore.myshopify.com"/>
@@ -24,7 +24,7 @@
                         </setting>
                     </block>
                     <block title="Shippo Configuration" name="shippo_config">
-                        <setting id="shippo_credentials" string="API Keys">
+                        <setting id="shippo_credentials" string="Shipping API" help="Shippo API configuration for shipping labels">
                             <div class="row mt16">
                                 <label for="shippo_api_key" class="col-lg-3 o_light_label"/>
                                 <field name="shippo_api_key" password="True"/>
@@ -52,7 +52,7 @@
                         </setting>
                     </block>
                     <block title="Automation" name="automation_config">
-                         <setting id="auto_process" string="Workflow">
+                         <setting id="auto_process" string="Workflow Automation" help="Configure automatic processing options">
                             <div class="row mt16">
                                 <field name="fulfillment_auto_process"/>
                                 <label for="fulfillment_auto_process"/>
@@ -65,3 +65,4 @@
     </record>
 
 </odoo>
+
