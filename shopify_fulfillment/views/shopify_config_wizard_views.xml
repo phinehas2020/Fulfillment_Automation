@@ -25,6 +25,8 @@
                         </group>
                         <group string="Automation">
                             <field name="fulfillment_auto_process"/>
+                            <field name="fulfillment_default_user_id"/>
+                            <field name="fulfillment_stock_location_id"/>
                         </group>
                     </group>
                 </sheet>

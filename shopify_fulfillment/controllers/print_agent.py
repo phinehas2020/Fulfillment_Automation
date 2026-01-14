@@ -126,6 +126,47 @@ class PrintAgentController(http.Controller):
         job.write(vals)
 
         if success and job.order_id:
+            # Create Fulfillment To-Do if it doesn't exist yet for this order
+            todo_model = request.env["fulfillment.todo"].sudo()
+            existing_todo = todo_model.search([("order_id", "=", job.order_id.id)], limit=1)
+            if not existing_todo:
+                ICP = request.env["ir.config_parameter"].sudo()
+                default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
+                default_user_id = int(default_user_id_raw) if default_user_id_raw else False
+                
+                todo_vals = {
+                    "order_id": job.order_id.id,
+                    "user_id": default_user_id,
+                    "line_ids": [
+                        (0, 0, {
+                            "sku": line.sku,
+                            "title": line.title,
+                            "quantity": line.quantity
+                        }) for line in job.order_id.line_ids if line.requires_shipping
+                    ]
+                }
+                new_todo = todo_model.create(todo_vals)
+                
+                # Create Notification Activity
+                if default_user_id:
+                    try:
+                        new_todo.activity_schedule(
+                            'mail.mail_activity_data_todo',
+                            summary=f"Pack Order {job.order_id.order_name or job.order_id.order_number}",
+                            user_id=default_user_id
+                        )
+                    except Exception as e:
+                        request.env["ir.logging"].sudo().create({
+                            "name": "fulfillment_todo_activity",
+                            "type": "server",
+                            "level": "WARNING",
+                            "dbname": request.env.cr.dbname,
+                            "message": f"Failed to create activity: {e}",
+                            "path": __name__,
+                            "line": "0",
+                            "func": "complete",
+                        })
+
             # Mark order shipped if all jobs completed
             remaining = job.order_id.print_job_ids.filtered(lambda j: j.state != "completed")
             if not remaining:

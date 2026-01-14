@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/print_agent
-ExecStart=/usr/bin/python3 main.py
+User=gristmill
+WorkingDirectory=/home/gristmill/Fulfillment_Automation/print_agent
+ExecStart=/home/gristmill/Fulfillment_Automation/print_agent/venv/bin/python3 main.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

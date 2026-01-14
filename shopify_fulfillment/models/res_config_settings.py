@@ -20,3 +20,14 @@ class ResConfigSettings(models.TransientModel):
         string="Print Agent Lease Seconds",
         default=300,
     )
+    fulfillment_default_user_id = fields.Many2one(
+        'res.users', 
+        config_parameter='fulfillment.default_user_id', 
+        string="Default Fulfillment Employee"
+    )
+    fulfillment_stock_location_id = fields.Many2one(
+        'stock.location', 
+        config_parameter='fulfillment.stock_location_id', 
+        string="Source Stock Location",
+        domain=[('usage', '=', 'internal')]
+    )

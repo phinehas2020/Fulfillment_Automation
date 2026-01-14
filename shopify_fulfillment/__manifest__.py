@@ -5,7 +5,7 @@
     "license": "LGPL-3",
     "author": "Your Company",
     "website": "",
-    "depends": ["base", "base_setup"],
+    "depends": ["base", "base_setup", "stock", "mail"],
     "external_dependencies": {"python": ["requests", "dateutil"]},
     "application": True,
     "data": [
@@ -17,6 +17,7 @@
         "views/print_job_views.xml",
         "views/print_test_wizard_views.xml",
         "views/shopify_config_wizard_views.xml",
+        "views/fulfillment_todo_views.xml",
         "views/menu.xml",
     ],
     "description": """
