@@ -5,3 +5,4 @@ access_fulfillment_box_user,access.fulfillment.box,model_fulfillment_box,base.gr
 access_fulfillment_shipment_user,access.fulfillment.shipment,model_fulfillment_shipment,base.group_user,1,1,1,0
 access_print_job_user,access.print.job,model_print_job,base.group_user,1,1,1,0
 access_print_test_wizard_user,access.print.test.wizard,model_print_test_wizard,base.group_user,1,1,1,1
+access_shopify_fulfillment_config_admin,access.shopify.fulfillment.config,model_shopify_fulfillment_config,base.group_system,1,1,1,0

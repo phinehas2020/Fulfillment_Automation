@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Configuration Form View -->
+    <record id="view_shopify_fulfillment_config_form" model="ir.ui.view">
+        <field name="name">shopify.fulfillment.config.form</field>
+        <field name="model">shopify.fulfillment.config</field>
+        <field name="arch" type="xml">
+            <form string="Shopify Fulfillment Configuration" create="false" delete="false">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>Shopify Fulfillment Configuration</h1>
+                    </div>
+                    <notebook>
+                        <page string="Shopify API" name="shopify">
+                            <group>
+                                <group string="Store Credentials">
+                                    <field name="shopify_shop_domain" placeholder="mystore.myshopify.com"/>
+                                    <field name="shopify_api_key" password="True"/>
+                                    <field name="shopify_webhook_secret" password="True"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Shipping" name="shipping">
+                            <group>
+                                <group string="Shippo Configuration">
+                                    <field name="shippo_api_key" password="True"/>
+                                    <field name="shipper_phone" placeholder="+1 555-555-5555"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Print Agent" name="print_agent">
+                            <group>
+                                <group string="Print Agent Settings">
+                                    <field name="print_agent_api_key" password="True"/>
+                                    <field name="print_agent_max_attempts"/>
+                                    <field name="print_agent_lease_seconds"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Automation" name="automation">
+                            <group>
+                                <group string="Workflow Settings">
+                                    <field name="fulfillment_auto_process"/>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Action to open configuration (singleton pattern) -->
+    <record id="action_shopify_fulfillment_config" model="ir.actions.server">
+        <field name="name">Shopify Fulfillment Configuration</field>
+        <field name="model_id" ref="model_shopify_fulfillment_config"/>
+        <field name="state">code</field>
+        <field name="code">
+config = env['shopify.fulfillment.config']._get_config()
+action = {
+    'type': 'ir.actions.act_window',
+    'name': 'Configuration',
+    'res_model': 'shopify.fulfillment.config',
+    'view_mode': 'form',
+    'res_id': config.id,
+    'target': 'current',
+    'views': [(env.ref('shopify_fulfillment.view_shopify_fulfillment_config_form').id, 'form')],
+}
+        </field>
+    </record>
+</odoo>
