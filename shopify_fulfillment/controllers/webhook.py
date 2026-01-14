@@ -6,6 +6,7 @@ from hashlib import sha256
 
 from odoo import http
 from odoo.http import request
+from psycopg2 import IntegrityError
 
 from ..services.shopify_api import ShopifyAPI
 
@@ -49,7 +50,12 @@ class ShopifyWebhookController(http.Controller):
             return {"status": "duplicate", "order_id": existing.id}
 
         order_vals = self._prepare_order_vals(payload)
-        order = order_model.create(order_vals)
+        try:
+            order = order_model.create(order_vals)
+        except IntegrityError:
+            request.env.cr.rollback()
+            existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
+            return {"status": "duplicate", "order_id": existing.id if existing else False}
         
         # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
         auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
@@ -125,5 +131,4 @@ class ShopifyWebhookController(http.Controller):
             return dt.replace(tzinfo=None)  # Odoo expects naive UTC
         except Exception:
             return False
-
 

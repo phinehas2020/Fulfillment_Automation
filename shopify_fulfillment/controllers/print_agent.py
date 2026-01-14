@@ -1,5 +1,7 @@
 import json
-from odoo import http
+from datetime import timedelta
+
+from odoo import fields, http
 from odoo.http import request, Response
 
 from ..services.shopify_api import ShopifyAPI
@@ -8,10 +10,54 @@ from ..services.shopify_api import ShopifyAPI
 class PrintAgentController(http.Controller):
     """Endpoints for Raspberry Pi print agent polling + job completion."""
 
+    @staticmethod
+    def _get_print_agent_limits():
+        ICP = request.env["ir.config_parameter"].sudo()
+        max_attempts_raw = ICP.get_param("print_agent.max_attempts", "3")
+        lease_seconds_raw = ICP.get_param("print_agent.lease_seconds", "300")
+        try:
+            max_attempts = int(max_attempts_raw)
+        except (TypeError, ValueError):
+            max_attempts = 3
+        try:
+            lease_seconds = int(lease_seconds_raw)
+        except (TypeError, ValueError):
+            lease_seconds = 300
+        return max_attempts, lease_seconds
+
+    def _requeue_stale_jobs(self):
+        max_attempts, lease_seconds = self._get_print_agent_limits()
+        cutoff = fields.Datetime.now() - timedelta(seconds=lease_seconds)
+        cutoff_str = fields.Datetime.to_string(cutoff)
+
+        stale_jobs = request.env["print.job"].sudo().search(
+            [("state", "=", "printing"), ("write_date", "<", cutoff_str)]
+        )
+        for job in stale_jobs:
+            attempts = job.attempts or 0
+            if attempts >= max_attempts:
+                job.write(
+                    {
+                        "state": "failed",
+                        "error_message": "Print lease expired; max attempts reached.",
+                        "completed_at": fields.Datetime.now(),
+                    }
+                )
+            else:
+                job.write(
+                    {
+                        "state": "pending",
+                        "error_message": "Print lease expired; requeued.",
+                        "completed_at": False,
+                    }
+                )
+
     @http.route("/print-agent/poll", type="http", auth="public", methods=["GET"], csrf=False)
     def poll(self, printer_id=None, **kwargs):
         if not self._is_authorized():
             return Response("Unauthorized", status=401)
+
+        self._requeue_stale_jobs()
 
         domain = [("state", "=", "pending")]
         if printer_id:
@@ -49,17 +95,34 @@ class PrintAgentController(http.Controller):
         success = payload.get("success", False)
         error_message = payload.get("error_message")
 
-        job = request.env["print.job"].sudo().browse(job_id)
+        if not job_id:
+            return Response("Job id required", status=400)
+
+        job = request.env["print.job"].sudo().browse(job_id).exists()
         if not job:
             return Response("Job not found", status=404)
 
-        from odoo.fields import Datetime
+        max_attempts, _ = self._get_print_agent_limits()
+        attempts = job.attempts or 0
 
-        vals = {
-            "state": "completed" if success else "failed",
-            "error_message": error_message or False,
-            "completed_at": Datetime.now(),
-        }
+        if success:
+            vals = {
+                "state": "completed",
+                "error_message": False,
+                "completed_at": fields.Datetime.now(),
+            }
+        elif attempts >= max_attempts:
+            vals = {
+                "state": "failed",
+                "error_message": error_message or "Print failed; max attempts reached.",
+                "completed_at": fields.Datetime.now(),
+            }
+        else:
+            vals = {
+                "state": "pending",
+                "error_message": error_message or "Print failed; requeued.",
+                "completed_at": False,
+            }
         job.write(vals)
 
         if success and job.order_id:
@@ -70,14 +133,18 @@ class PrintAgentController(http.Controller):
                 try:
                     api = ShopifyAPI.from_env(request.env)
                     shipment = job.shipment_id
-                    if shipment:
-                        api.create_fulfillment(
+                    if shipment and not shipment.shopify_fulfillment_id and shipment.tracking_number:
+                        resp = api.create_fulfillment(
                             job.order_id,
                             {
                                 "tracking_number": shipment.tracking_number,
                                 "tracking_url": shipment.tracking_url,
+                                "carrier": shipment.carrier,
                             },
                         )
+                        fulfillment = resp.get("fulfillment") if isinstance(resp, dict) else None
+                        if fulfillment and fulfillment.get("id"):
+                            shipment.write({"shopify_fulfillment_id": fulfillment["id"]})
                 except Exception as exc:  # pylint: disable=broad-except
                     # Do not block completion if Shopify call fails
                     request.env["ir.logging"].sudo().create(
@@ -105,5 +172,3 @@ class PrintAgentController(http.Controller):
             api_key = api_key.replace("Bearer ", "", 1)
         configured = request.env["ir.config_parameter"].sudo().get_param("print_agent.api_key")
         return configured and api_key and api_key == configured
-
-

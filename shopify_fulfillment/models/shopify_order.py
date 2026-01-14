@@ -11,6 +11,9 @@ class ShopifyOrder(models.Model):
 
     _name = "shopify.order"
     _description = "Shopify Order"
+    _sql_constraints = [
+        ("shopify_id_unique", "unique(shopify_id)", "Shopify order already exists."),
+    ]
 
     shopify_id = fields.Char(required=True, index=True)
     order_number = fields.Char(string="Order Number")
@@ -127,8 +130,8 @@ class ShopifyOrder(models.Model):
         """Manual action to sync status from Shopify."""
         # Use existing logic but ensure we force it
         try:
-             # The existing private method handles batching self, but if called from action, self contains selected records
-             self._sync_shopify_status()
+            # The existing private method handles batching self, but if called from action, self contains selected records
+            self._sync_shopify_status()
         except Exception as e:
             raise exceptions.UserError(f"Sync failed: {e}")
 
@@ -150,43 +153,41 @@ class ShopifyOrder(models.Model):
         if not self.line_ids:
             raise exceptions.UserError("Order has no line items")
 
-            # Auto-recover missing weights from Shopify
-            if any(l.requires_shipping and not l.weight for l in self.line_ids):
-                api_client = self._get_shopify_api()
-                fixed_count = 0
-                for line in self.line_ids:
-                    if line.requires_shipping and not line.weight:
-                        _logger.info("Validation: Line has 0 weight. Fetching details for Line %s...", line.id)
-                        
-                        variant = None
-                        # Strategy 1: Use Variant ID if exists
-                        if line.shopify_variant_id:
-                            variant = api_client.get_product_variant(line.shopify_variant_id)
-                            if variant:
-                                weight_g = variant.get("grams") or 0.0
-                                if weight_g:
-                                    line.write({"weight": weight_g})
-                                    fixed_count += 1
-                                    continue # Success, move to next line
+        # Auto-recover missing weights from Shopify
+        if any(l.requires_shipping and not l.weight for l in self.line_ids):
+            api_client = self._get_shopify_api()
+            fixed_count = 0
+            for line in self.line_ids:
+                if line.requires_shipping and not line.weight:
+                    _logger.info("Validation: Line has 0 weight. Fetching details for Line %s...", line.id)
 
-                        # Strategy 2: If failed or no ID, lookup by SKU
-                        if line.sku:
-                             _logger.info("Validation: Fetching weight by SKU %s match...", line.sku)
-                             weight_g = api_client.get_weight_by_sku(line.sku)
-                             if weight_g:
-                                 _logger.info("Found weight by SKU: %s", weight_g)
-                                 line.write({"weight": weight_g})
-                                 fixed_count += 1
-                
-                if fixed_count > 0:
-                    self._compute_totals() # Force recompute
-            
+                    variant = None
+                    # Strategy 1: Use Variant ID if exists
+                    if line.shopify_variant_id:
+                        variant = api_client.get_product_variant(line.shopify_variant_id)
+                        if variant:
+                            weight_g = variant.get("grams") or 0.0
+                            if weight_g:
+                                line.write({"weight": weight_g})
+                                fixed_count += 1
+                                continue  # Success, move to next line
+
+                    # Strategy 2: If failed or no ID, lookup by SKU
+                    if line.sku:
+                        _logger.info("Validation: Fetching weight by SKU %s match...", line.sku)
+                        weight_g = api_client.get_weight_by_sku(line.sku)
+                        if weight_g:
+                            _logger.info("Found weight by SKU: %s", weight_g)
+                            line.write({"weight": weight_g})
+                            fixed_count += 1
+
+            if fixed_count > 0:
+                self._compute_totals()  # Force recompute
+
         # Basic validation: weights present (check again after recovery attempt)
         if any(l.requires_shipping and not l.weight for l in self.line_ids):
             self.write({"state": "manual_required", "error_message": "Missing weight on one or more items (Fetch failed)"})
             return
-
-        self.write({"state": "processing"})
 
         self.write({"state": "processing"})
 
@@ -277,18 +278,6 @@ class ShopifyOrder(models.Model):
             # Specific failure from provider
             self.write({"state": "error", "error_message": shipment_vals["error"]})
             return
-
-        # Push Fulfillment to Shopify
-        api_client = self._get_shopify_api()
-        try:
-            # We only push if we have a valid tracking number
-            if shipment_vals.get("tracking_number"):
-                ff_resp = api_client.create_fulfillment(self, shipment_vals)
-                if ff_resp and ff_resp.get("fulfillment"):
-                    shipment_vals["shopify_fulfillment_id"] = ff_resp["fulfillment"]["id"]
-        except Exception as e:
-            _logger.error("Failed to update Shopify fulfillment: %s", e)
-            # We continue because we still want to save the label and print it
 
         shipment = self.env["fulfillment.shipment"].create(
             {
