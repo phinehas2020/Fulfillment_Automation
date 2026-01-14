@@ -5,7 +5,7 @@
     "license": "LGPL-3",
     "author": "Your Company",
     "website": "",
-    "depends": ["base"],
+    "depends": ["base", "base_setup"],
     "external_dependencies": {"python": ["requests", "dateutil"]},
     "application": True,
     "data": [
