@@ -3,12 +3,13 @@
     <record id="res_config_settings_view_form" model="ir.ui.view">
         <field name="name">res.config.settings.view.form.inherit.shopify</field>
         <field name="model">res.config.settings</field>
+        <field name="priority">50</field>
         <field name="inherit_id" ref="base.res_config_settings_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//form" position="inside">
-                <app data-string="Shopify Fulfillment" string="Shopify Fulfillment" name="shopify_fulfillment">
-                    <block title="Shopify Configuration" name="shopify_config">
-                        <setting id="shopify_credentials" string="API Credentials" help="Your Shopify store credentials for API access">
+                <app data-string="Shopify Fulfillment" string="Shopify Fulfillment" name="shopify_fulfillment" groups="base.group_system">
+                    <block title="Shopify API" name="shopify_config">
+                        <setting id="shopify_credentials" string="Shopify Credentials" help="Your Shopify store credentials for API access">
                             <div class="row mt16">
                                 <label for="shopify_shop_domain" class="col-lg-3 o_light_label"/>
                                 <field name="shopify_shop_domain" placeholder="e.g. mystore.myshopify.com"/>
@@ -23,8 +24,8 @@
                             </div>
                         </setting>
                     </block>
-                    <block title="Shippo Configuration" name="shippo_config">
-                        <setting id="shippo_credentials" string="Shipping API" help="Shippo API configuration for shipping labels">
+                    <block title="Shippo Shipping" name="shippo_config">
+                        <setting id="shippo_credentials" string="Shippo API" help="Shippo API configuration for shipping labels">
                             <div class="row mt16">
                                 <label for="shippo_api_key" class="col-lg-3 o_light_label"/>
                                 <field name="shippo_api_key" password="True"/>
@@ -36,7 +37,7 @@
                         </setting>
                     </block>
                     <block title="Print Agent" name="print_agent_config">
-                        <setting id="print_agent_settings" string="Print Agent">
+                        <setting id="print_agent_settings" string="Print Agent Configuration">
                             <div class="row mt16">
                                 <label for="print_agent_api_key" class="col-lg-3 o_light_label"/>
                                 <field name="print_agent_api_key" password="True"/>
@@ -65,4 +66,3 @@
     </record>
 
 </odoo>
-
