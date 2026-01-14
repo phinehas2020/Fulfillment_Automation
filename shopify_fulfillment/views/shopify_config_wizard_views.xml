@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_shopify_config_wizard_form" model="ir.ui.view">
+        <field name="name">shopify.config.wizard.form</field>
+        <field name="model">shopify.config.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Configuration">
+                <sheet>
+                    <group>
+                        <group string="Shopify API">
+                            <field name="shopify_shop_domain" placeholder="mystore.myshopify.com"/>
+                            <field name="shopify_api_key" password="True"/>
+                            <field name="shopify_webhook_secret" password="True"/>
+                        </group>
+                        <group string="Shippo Shipping">
+                            <field name="shippo_api_key" password="True"/>
+                            <field name="shipper_phone" placeholder="+1 555-555-5555"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Print Agent">
+                            <field name="print_agent_api_key" password="True"/>
+                            <field name="print_agent_max_attempts"/>
+                            <field name="print_agent_lease_seconds"/>
+                        </group>
+                        <group string="Automation">
+                            <field name="fulfillment_auto_process"/>
+                        </group>
+                    </group>
+                </sheet>
+                <footer>
+                    <button name="action_save" type="object" string="Save" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_shopify_config_wizard" model="ir.actions.act_window">
+        <field name="name">Configuration</field>
+        <field name="res_model">shopify.config.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="view_id" ref="view_shopify_config_wizard_form"/>
+    </record>
+</odoo>

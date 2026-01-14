@@ -1,7 +1,7 @@
 {
     "name": "Shopify Fulfillment Automation",
     "summary": "Automated fulfillment via Shopify Shipping API with print queue dispatch",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "license": "LGPL-3",
     "author": "Your Company",
     "website": "",
@@ -16,6 +16,7 @@
         "views/fulfillment_box_views.xml",
         "views/print_job_views.xml",
         "views/print_test_wizard_views.xml",
+        "views/shopify_config_wizard_views.xml",
         "views/menu.xml",
     ],
     "description": """
