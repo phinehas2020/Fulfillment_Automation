@@ -4,5 +4,14 @@
     <menuitem id="menu_shopify_orders" name="Orders" parent="menu_shopify_root" action="view_shopify_order_action" sequence="10"/>
     <menuitem id="menu_shopify_boxes" name="Boxes" parent="menu_shopify_root" action="action_fulfillment_box" sequence="20"/>
     <menuitem id="menu_shopify_print_jobs" name="Print Jobs" parent="menu_shopify_root" action="action_print_job" sequence="30"/>
-    <menuitem id="menu_shopify_config" name="Configuration" parent="menu_shopify_root" action="action_shopify_fulfillment_config" sequence="100"/>
+    
+    <!-- Temporary: use res.config.settings until dedicated config is fixed -->
+    <record id="action_shopify_config_settings" model="ir.actions.act_window">
+        <field name="name">Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+        <field name="context">{'module': 'shopify_fulfillment'}</field>
+    </record>
+    <menuitem id="menu_shopify_config" name="Configuration" parent="menu_shopify_root" action="action_shopify_config_settings" sequence="100"/>
 </odoo>
