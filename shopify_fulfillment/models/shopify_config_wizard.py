@@ -24,6 +24,18 @@ class ShopifyConfigWizard(models.TransientModel):
     fulfillment_default_user_id = fields.Many2one('res.users', string="Default Fulfillment Employee")
     fulfillment_stock_location_id = fields.Many2one('stock.location', string="Source Stock Location")
 
+    def _get_param_as_int(self, key):
+        """Safely retrieve a config parameter as an int > 0, or False."""
+        ICP = self.env['ir.config_parameter'].sudo()
+        val = ICP.get_param(key)
+        if not val:
+            return False
+        try:
+            val_int = int(val)
+            return val_int if val_int > 0 else False
+        except ValueError:
+            return False
+
     @api.model
     def default_get(self, fields_list):
         """Load current values from ir.config_parameter."""
@@ -39,8 +51,8 @@ class ShopifyConfigWizard(models.TransientModel):
             'print_agent_max_attempts': int(ICP.get_param('print_agent.max_attempts', '3') or 3),
             'print_agent_lease_seconds': int(ICP.get_param('print_agent.lease_seconds', '300') or 300),
             'fulfillment_auto_process': ICP.get_param('fulfillment.auto_process', 'False') == 'True',
-            'fulfillment_default_user_id': int(ICP.get_param('fulfillment.default_user_id', '0') or 0) or False,
-            'fulfillment_stock_location_id': int(ICP.get_param('fulfillment.stock_location_id', '0') or 0) or False,
+            'fulfillment_default_user_id': self._get_param_as_int('fulfillment.default_user_id'),
+            'fulfillment_stock_location_id': self._get_param_as_int('fulfillment.stock_location_id'),
         })
         return res
 
