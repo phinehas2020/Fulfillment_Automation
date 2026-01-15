@@ -9,6 +9,8 @@ class FulfillmentTodo(models.Model):
 
     order_id = fields.Many2one("shopify.order", string="Shopify Order", required=True, readonly=True)
     user_id = fields.Many2one("res.users", string="Assigned Employee", tracking=True)
+    name = fields.Char(string="Task Name", compute="_compute_name", store=True)
+
     state = fields.Selection([
         ("pending", "Pending"),
         ("completed", "Completed"),
@@ -18,6 +20,11 @@ class FulfillmentTodo(models.Model):
     line_ids = fields.One2many("fulfillment.todo.line", "todo_id", string="Items to Pack")
     
     date_completed = fields.Datetime(string="Completed At", readonly=True)
+
+    @api.depends("order_id.order_name", "order_id.order_number")
+    def _compute_name(self):
+        for record in self:
+            record.name = f"Pack {record.order_id.order_name or record.order_id.order_number or 'Order'}"
 
     def action_complete(self):
         """Mark as complete and decrement Odoo inventory."""
