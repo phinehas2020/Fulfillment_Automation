@@ -39,8 +39,8 @@ class ShopifyConfigWizard(models.TransientModel):
             'print_agent_max_attempts': int(ICP.get_param('print_agent.max_attempts', '3') or 3),
             'print_agent_lease_seconds': int(ICP.get_param('print_agent.lease_seconds', '300') or 300),
             'fulfillment_auto_process': ICP.get_param('fulfillment.auto_process', 'False') == 'True',
-            'fulfillment_default_user_id': int(ICP.get_param('fulfillment.default_user_id', '0') or 0),
-            'fulfillment_stock_location_id': int(ICP.get_param('fulfillment.stock_location_id', '0') or 0),
+            'fulfillment_default_user_id': int(ICP.get_param('fulfillment.default_user_id', '0') or 0) or False,
+            'fulfillment_stock_location_id': int(ICP.get_param('fulfillment.stock_location_id', '0') or 0) or False,
         })
         return res
 
