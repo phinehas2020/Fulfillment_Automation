@@ -1,36 +1,21 @@
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
 
-class FulfillmentTodo(models.Model):
-    _name = "fulfillment.todo"
-    _description = "Fulfillment To-Do Task"
-    _inherit = ["mail.thread", "mail.activity.mixin"]
-    _order = "id desc"
+class ProjectTask(models.Model):
+    _inherit = "project.task"
 
-    order_id = fields.Many2one("shopify.order", string="Shopify Order", required=True, readonly=True)
-    user_id = fields.Many2one("res.users", string="Assigned Employee", tracking=True)
-    name = fields.Char(string="Task Name", compute="_compute_name", store=True)
+    shopify_order_id = fields.Many2one("shopify.order", string="Shopify Order", readonly=True)
+    is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
+    fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
 
-    state = fields.Selection([
-        ("pending", "Pending"),
-        ("completed", "Completed"),
-        ("cancel", "Cancelled")
-    ], default="pending", string="Status", tracking=True)
-    
-    line_ids = fields.One2many("fulfillment.todo.line", "todo_id", string="Items to Pack")
-    
-    date_completed = fields.Datetime(string="Completed At", readonly=True)
-
-    @api.depends("order_id.order_name", "order_id.order_number")
-    def _compute_name(self):
-        for record in self:
-            record.name = f"Pack {record.order_id.order_name or record.order_id.order_number or 'Order'}"
-
-    def action_complete(self):
-        """Mark as complete and decrement Odoo inventory."""
+    def action_fulfillment_deduct_inventory(self):
+        """Deduct inventory for the linked Shopify Order."""
         self.ensure_one()
-        if self.state == 'completed':
-            return True
+        if not self.shopify_order_id or not self.is_fulfillment_task:
+            return
+            
+        if self.fulfillment_inventory_deducted:
+            return
 
         # Get configuration
         ICP = self.env["ir.config_parameter"].sudo()
@@ -59,14 +44,19 @@ class FulfillmentTodo(models.Model):
             'picking_type_id': picking_type.id,
             'location_id': src_location.id,
             'location_dest_id': customer_location.id,
-            'origin': self.order_id.order_name or self.order_id.order_number,
+            'origin': self.shopify_order_id.order_name or self.shopify_order_id.order_number,
             'move_type': 'direct',
         }
         
         picking = self.env['stock.picking'].create(picking_vals)
         
         moves = []
-        for line in self.line_ids:
+        # We need to look at the order lines from the linked order
+        # Since we don't duplicate them onto the task, we read them from order_id
+        for line in self.shopify_order_id.line_ids:
+            if not line.requires_shipping:
+                continue
+
             # Match product by SKU (internal_reference)
             product = self.env['product.product'].search([('default_code', '=', line.sku)], limit=1)
             if not product:
@@ -74,8 +64,6 @@ class FulfillmentTodo(models.Model):
                 product = self.env['product.product'].search([('product_tmpl_id.default_code', '=', line.sku)], limit=1)
             
             if not product:
-                # If we still can't find it, we might want to skip or error.
-                # For now, let's log a message in the chatter and skip this item but record the failure
                 self.message_post(body=_("Could not find Odoo product for SKU: %s. Inventory was not decremented for this item.") % line.sku)
                 continue
 
@@ -92,36 +80,41 @@ class FulfillmentTodo(models.Model):
 
         if not moves:
             picking.unlink()
-            raise UserError(_("No matching products found in Odoo for any of the items in this order. Please check your SKUs."))
+            # If no moves, maybe we just mark it as done anyway?
+            # But let's warn.
+            self.message_post(body=_("No matching items found to deduct inventory."))
+            self.fulfillment_inventory_deducted = True
+            return
 
         # Validate the picking
         picking.action_confirm()
         picking.action_assign()
         
-        # We try to validate it immediately. If stock is missing, Odoo might create a backorder or 
-        # we might just force it depending on how the user wants. 
-        # Typically for "post-facto" inventory adjustment, we just want it done.
         for move in picking.move_ids:
             move.quantity = move.product_uom_qty
             move.picked = True
             
         picking.button_validate()
 
-        self.write({
-            'state': 'completed',
-            'date_completed': fields.Datetime.now()
-        })
-        return True
+        self.fulfillment_inventory_deducted = True
+        self.message_post(body=_("Inventory successfully deducted (Delivery: %s)") % picking.name)
 
-    def action_cancel(self):
-        self.write({'state': 'cancel'})
-
-
-class FulfillmentTodoLine(models.Model):
-    _name = "fulfillment.todo.line"
-    _description = "Fulfillment To-Do line"
-
-    todo_id = fields.Many2one("fulfillment.todo", ondelete="cascade")
-    sku = fields.Char(string="SKU")
-    title = fields.Char(string="Title")
-    quantity = fields.Integer(string="Quantity")
+    def write(self, vals):
+        res = super().write(vals)
+        # Check if task is being marked as done
+        # State logic depends on Odoo version, but universally 'state' field or 'stage_id'
+        # In Odoo 16/17 Project Task:
+        # state selection: [('01_in_progress', 'In Progress'), ('1_done', 'Done'), ('04_waiting_normal', 'Waiting'), ...]
+        # OR simple stages.
+        
+        # Let's check for state='1_done' if it exists, or check 'state' generally
+        if 'state' in vals and vals['state'] in ['1_done', 'done']:
+             for task in self:
+                 if task.is_fulfillment_task and not task.fulfillment_inventory_deducted:
+                     try:
+                         task.action_fulfillment_deduct_inventory()
+                     except Exception as e:
+                         # Don't block the write, but log it
+                         task.message_post(body=_("Failed to auto-deduct inventory: %s") % str(e))
+        
+        return res

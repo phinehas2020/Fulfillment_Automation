@@ -6,5 +6,3 @@ access_fulfillment_shipment_user,access.fulfillment.shipment,model_fulfillment_s
 access_print_job_user,access.print.job,model_print_job,base.group_user,1,1,1,0
 access_print_test_wizard_user,access.print.test.wizard,model_print_test_wizard,base.group_user,1,1,1,1
 access_shopify_config_wizard_user,access.shopify.config.wizard,model_shopify_config_wizard,base.group_user,1,1,1,1
-access_fulfillment_todo_user,access.fulfillment.todo,model_fulfillment_todo,base.group_user,1,1,1,1
-access_fulfillment_todo_line_user,access.fulfillment.todo.line,model_fulfillment_todo_line,base.group_user,1,1,1,1
