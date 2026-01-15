@@ -4,13 +4,13 @@
         <field name="name">fulfillment.todo.list</field>
         <field name="model">fulfillment.todo</field>
         <field name="arch" type="xml">
-            <tree decoration-info="state == 'pending'" decoration-success="state == 'completed'" decoration-muted="state == 'cancel'">
+            <list decoration-info="state == 'pending'" decoration-success="state == 'completed'" decoration-muted="state == 'cancel'">
                 <field name="name"/>
                 <field name="order_id"/>
                 <field name="user_id"/>
                 <field name="state" widget="badge" decoration-info="state == 'pending'" decoration-success="state == 'completed'"/>
                 <field name="date_completed"/>
-            </tree>
+            </list>
         </field>
     </record>
 
@@ -40,11 +40,11 @@
                     <notebook>
                         <page string="Items to Pack">
                             <field name="line_ids">
-                                <tree editable="bottom">
+                                <list editable="bottom">
                                     <field name="sku" readonly="1"/>
                                     <field name="title" readonly="1"/>
                                     <field name="quantity" readonly="1"/>
-                                </tree>
+                                </list>
                             </field>
                         </page>
                     </notebook>
