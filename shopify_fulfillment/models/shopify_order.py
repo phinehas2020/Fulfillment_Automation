@@ -60,7 +60,7 @@ class ShopifyOrder(models.Model):
     inventory_deducted = fields.Boolean(
         string="Inventory Deducted", 
         compute="_compute_inventory_status", 
-        store=True,
+        store=False,
         help="Indicates if inventory has been deducted via a fulfillment task."
     )
 
