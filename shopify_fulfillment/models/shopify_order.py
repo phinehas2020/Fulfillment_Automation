@@ -67,18 +67,13 @@ class ShopifyOrder(models.Model):
     @api.depends("fulfillment_task_ids.fulfillment_inventory_deducted")
     def _compute_inventory_status(self):
         for order in self:
-            order.inventory_deducted = any(t.fulfillment_inventory_deducted for t in order.fulfillment_task_ids)
+            # Check if any linked fulfillment task has inventory deducted
+            # We filter for is_fulfillment_task=True for accuracy
+            tasks = order.fulfillment_task_ids.filtered(lambda t: t.is_fulfillment_task and t.fulfillment_inventory_deducted)
+            order.inventory_deducted = bool(tasks)
 
-    def read(self, fields=None, load="_classic_read"):
-        """Override read to sync status from Shopify on load."""
-        if not self.env.context.get("shopify_sync_done") and (fields is None or "state" in fields):
-            try:
-                # Avoid syncing if we are purely in a computation loop or low-level access
-                # But here we want to catch the view load.
-                self.with_context(shopify_sync_done=True)._sync_shopify_status()
-            except Exception as e:
-                _logger.warning("Failed to sync Shopify status on read: %s", e)
-        return super().read(fields=fields, load=load)
+    # Note: Removed the 'read' override to avoid Odoo 18 registry/compute loops.
+    # Users should use the 'Sync' button to refresh status from Shopify manually.
 
     def _sync_shopify_status(self):
         """Fetch latest status from Shopify and update local state."""
