@@ -62,6 +62,20 @@
                         <page string="Print Jobs">
                             <field name="print_job_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_print_job_tree'}"/>
                         </page>
+                        <page string="Inventory Status" name="inventory_status">
+                            <group>
+                                <field name="inventory_deducted" widget="boolean_toggle" readonly="1"/>
+                            </group>
+                            <separator string="Fulfillment Tasks"/>
+                            <field name="fulfillment_task_ids" readonly="1">
+                                <tree>
+                                    <field name="name"/>
+                                    <field name="user_ids" widget="many2many_tags"/>
+                                    <field name="state"/>
+                                    <field name="fulfillment_inventory_deducted" widget="boolean_toggle"/>
+                                </tree>
+                            </field>
+                        </page>
                         <page string="Raw Payload">
                             <field name="raw_payload" nolabel="1" readonly="1"/>
                         </page>

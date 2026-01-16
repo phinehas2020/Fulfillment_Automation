@@ -56,6 +56,18 @@ class ShopifyOrder(models.Model):
         string="Shopify Risk Level",
         help="Risk level fetched from Shopify (High, Medium, Low)"
     )
+    fulfillment_task_ids = fields.One2many("project.task", "shopify_order_id", string="Fulfillment Tasks")
+    inventory_deducted = fields.Boolean(
+        string="Inventory Deducted", 
+        compute="_compute_inventory_status", 
+        store=True,
+        help="Indicates if inventory has been deducted via a fulfillment task."
+    )
+
+    @api.depends("fulfillment_task_ids.fulfillment_inventory_deducted")
+    def _compute_inventory_status(self):
+        for order in self:
+            order.inventory_deducted = any(t.fulfillment_inventory_deducted for t in order.fulfillment_task_ids)
 
     def read(self, fields=None, load="_classic_read"):
         """Override read to sync status from Shopify on load."""

@@ -12,10 +12,24 @@
                         invisible="not is_fulfillment_task or fulfillment_inventory_deducted"
                         class="oe_highlight"/>
             </header>
-            <xpath expr="//field[@name='user_ids']" position="after">
-                <field name="is_fulfillment_task" invisible="1"/>
-                <field name="shopify_order_id" invisible="not is_fulfillment_task" readonly="1"/>
-                <field name="fulfillment_inventory_deducted" invisible="not is_fulfillment_task" widget="boolean_toggle"/>
+            <!-- Add a dedicated tab (page) for fulfillment in the notebook -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Shopify Fulfillment" name="shopify_fulfillment" invisible="not is_fulfillment_task">
+                    <group>
+                        <group string="Order Info">
+                            <field name="is_fulfillment_task" invisible="1"/>
+                            <field name="shopify_order_id" readonly="1"/>
+                        </group>
+                        <group string="Inventory Status">
+                            <field name="fulfillment_inventory_deducted" widget="boolean_toggle"/>
+                            <button name="action_fulfillment_deduct_inventory" 
+                                    type="object" 
+                                    string="Retry Deduction" 
+                                    invisible="fulfillment_inventory_deducted"
+                                    class="btn-secondary"/>
+                        </group>
+                    </group>
+                </page>
             </xpath>
         </field>
     </record>
