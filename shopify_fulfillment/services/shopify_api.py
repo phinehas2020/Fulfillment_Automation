@@ -154,6 +154,44 @@ class ShopifyAPI:
             
         return resp.json().get("orders", [])
 
+    def get_unfulfilled_orders(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch all unfulfilled orders from Shopify.
+        Handles pagination to get all orders.
+        """
+        all_orders = []
+        # fulfillment_status=unfulfilled gets orders that haven't been fulfilled yet
+        # Also exclude cancelled orders
+        url = self._url(f"/orders.json?fulfillment_status=unfulfilled&status=open&limit={limit}")
+        
+        while url:
+            try:
+                resp = requests.get(url, headers=self._headers(), timeout=30)
+                if resp.status_code != 200:
+                    _logger.error("Failed to fetch unfulfilled orders: %s", resp.text)
+                    break
+                    
+                data = resp.json()
+                orders = data.get("orders", [])
+                all_orders.extend(orders)
+                
+                _logger.info("Fetched %d unfulfilled orders (total: %d)", len(orders), len(all_orders))
+                
+                # Check for pagination - Shopify uses Link header
+                link_header = resp.headers.get("Link", "")
+                url = None
+                if 'rel="next"' in link_header:
+                    # Parse the next URL from Link header
+                    for part in link_header.split(","):
+                        if 'rel="next"' in part:
+                            url = part.split(";")[0].strip().strip("<>")
+                            break
+            except Exception as e:
+                _logger.exception("Error fetching unfulfilled orders: %s", e)
+                break
+                
+        return all_orders
+
     @staticmethod
     def validate_webhook(payload: bytes, signature: str, secret: str) -> bool:
         if not signature:

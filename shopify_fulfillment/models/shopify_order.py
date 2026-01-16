@@ -213,6 +213,131 @@ class ShopifyOrder(models.Model):
         except Exception as e:
             raise exceptions.UserError(f"Sync failed: {e}")
 
+    @api.model
+    def action_import_from_shopify(self):
+        """
+        Fetch all unfulfilled orders from Shopify and import any that don't exist yet.
+        This is useful for catching orders missed during server downtime.
+        """
+        try:
+            api = self._get_shopify_api()
+        except Exception as e:
+            raise exceptions.UserError(f"Shopify API not configured: {e}")
+        
+        _logger.info("Starting Shopify order sync...")
+        
+        # Fetch unfulfilled orders from Shopify
+        shopify_orders = api.get_unfulfilled_orders()
+        _logger.info("Found %d unfulfilled orders in Shopify", len(shopify_orders))
+        
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        for order_data in shopify_orders:
+            shopify_id = str(order_data.get("id"))
+            
+            # Skip POS orders
+            if order_data.get("source_name") == "pos":
+                _logger.debug("Skipping POS order %s", shopify_id)
+                skipped_count += 1
+                continue
+            
+            # Check if already exists
+            existing = self.search([("shopify_id", "=", shopify_id)], limit=1)
+            if existing:
+                _logger.debug("Order %s already exists, skipping", shopify_id)
+                skipped_count += 1
+                continue
+            
+            # Prepare and create order
+            try:
+                order_vals = self._prepare_order_vals_from_shopify(order_data)
+                order = self.create(order_vals)
+                imported_count += 1
+                _logger.info("Imported order %s (%s)", order.order_name, shopify_id)
+                
+                # Check if auto-processing is enabled
+                ICP = self.env["ir.config_parameter"].sudo()
+                auto_process = ICP.get_param("fulfillment.auto_process", "False")
+                if auto_process.lower() in ("true", "1", "yes"):
+                    order.process_order()
+                    _logger.info("Order %s auto-processed", order.id)
+                    
+            except Exception as e:
+                _logger.exception("Failed to import order %s: %s", shopify_id, e)
+                error_count += 1
+        
+        message = f"Shopify Sync Complete:\n• Imported: {imported_count}\n• Skipped (existing/POS): {skipped_count}\n• Errors: {error_count}"
+        _logger.info(message)
+        
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Shopify Sync Complete',
+                'message': f"Imported: {imported_count}, Skipped: {skipped_count}, Errors: {error_count}",
+                'type': 'success' if error_count == 0 else 'warning',
+                'sticky': False,
+            }
+        }
+
+    def _prepare_order_vals_from_shopify(self, payload: dict):
+        """Prepare order values from Shopify API response (same as webhook format)."""
+        shipping = payload.get("shipping_address") or {}
+        line_vals = []
+        for line in payload.get("line_items", []):
+            line_vals.append(
+                (
+                    0,
+                    0,
+                    {
+                        "shopify_line_id": line.get("id"),
+                        "shopify_product_id": line.get("product_id"),
+                        "shopify_variant_id": line.get("variant_id"),
+                        "sku": line.get("sku"),
+                        "title": line.get("title"),
+                        "variant_title": line.get("variant_title"),
+                        "quantity": line.get("quantity") or 0,
+                        "weight": line.get("grams") or 0.0,
+                        "requires_shipping": line.get("requires_shipping", True),
+                    },
+                )
+            )
+        source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
+        
+        shipping_lines = payload.get("shipping_lines") or []
+        requested_method = shipping_lines[0].get("title") if shipping_lines else False
+        
+        created_at = False
+        if payload.get("created_at"):
+            try:
+                from dateutil import parser
+                dt = parser.parse(payload.get("created_at"))
+                created_at = dt.replace(tzinfo=None)
+            except Exception:
+                pass
+        
+        return {
+            "shopify_id": str(payload.get("id")),
+            "order_number": payload.get("order_number"),
+            "order_name": payload.get("name"),
+            "email": payload.get("email"),
+            "customer_name": f"{shipping.get('first_name', '')} {shipping.get('last_name', '')}".strip(),
+            "shipping_address_line1": shipping.get("address1"),
+            "shipping_address_line2": shipping.get("address2"),
+            "shipping_city": shipping.get("city"),
+            "shipping_state": shipping.get("province_code"),
+            "shipping_zip": shipping.get("zip"),
+            "shipping_country": shipping.get("country_code"),
+            "shipping_phone": shipping.get("phone"),
+            "created_at": created_at,
+            "raw_payload": __import__('json').dumps(payload),
+            "line_ids": line_vals,
+            "source": source,
+            "requested_shipping_method": requested_method,
+        }
+
     def action_process(self):
         for order in self:
             order.process_order()

@@ -116,6 +116,17 @@
         </field>
     </record>
 
+    <record id="action_import_from_shopify_server" model="ir.actions.server">
+        <field name="name">Sync Orders from Shopify</field>
+        <field name="model_id" ref="model_shopify_order"/>
+        <field name="binding_model_id" ref="model_shopify_order"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+            action = env['shopify.order'].action_import_from_shopify()
+        </field>
+    </record>
+
     <record id="view_shopify_order_line_inline_tree" model="ir.ui.view">
         <field name="name">shopify.order.line.inline.tree</field>
         <field name="model">shopify.order.line</field>
