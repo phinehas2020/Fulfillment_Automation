@@ -1,4 +1,4 @@
-from odoo import fields, models
+from odoo import fields, models, api
 
 class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
@@ -20,20 +20,46 @@ class ResConfigSettings(models.TransientModel):
         string="Print Agent Lease Seconds",
         default=300,
     )
+    
+    # Many2one fields don't support config_parameter directly in Odoo safely.
+    # We use manual get/set for these.
     fulfillment_default_user_id = fields.Many2one(
         'res.users', 
-        config_parameter='fulfillment.default_user_id', 
         string="Default Fulfillment Employee"
     )
     fulfillment_stock_location_id = fields.Many2one(
         'stock.location', 
-        config_parameter='fulfillment.stock_location_id', 
         string="Source Stock Location",
         domain=[('usage', '=', 'internal')]
     )
     fulfillment_risk_reviewer_id = fields.Many2one(
         'res.users',
-        config_parameter='fulfillment.risk_reviewer_id',
         string="Risk Reviewer (Email Notification)",
         help="Employee to notify when an order is flagged as high risk or address issues."
     )
+
+    def set_values(self):
+        super().set_values()
+        ICP = self.env['ir.config_parameter'].sudo()
+        ICP.set_param('fulfillment.default_user_id', str(self.fulfillment_default_user_id.id or ''))
+        ICP.set_param('fulfillment.stock_location_id', str(self.fulfillment_stock_location_id.id or ''))
+        ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))
+
+    @api.model
+    def get_values(self):
+        res = super().get_values()
+        ICP = self.env['ir.config_parameter'].sudo()
+        
+        def _get_int(key):
+            val = ICP.get_param(key)
+            try:
+                return int(val) if val else False
+            except ValueError:
+                return False
+
+        res.update({
+            'fulfillment_default_user_id': _get_int('fulfillment.default_user_id'),
+            'fulfillment_stock_location_id': _get_int('fulfillment.stock_location_id'),
+            'fulfillment_risk_reviewer_id': _get_int('fulfillment.risk_reviewer_id'),
+        })
+        return res
