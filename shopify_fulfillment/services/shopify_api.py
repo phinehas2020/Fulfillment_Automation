@@ -221,3 +221,42 @@ class ShopifyAPI:
             _logger.error("Failed to parse weight from GraphQL response: %s", e)
         return 0.0
 
+    def get_risk_level(self, shopify_order_id: str) -> str:
+        """Fetch risk level (HIGH, MEDIUM, LOW) using GraphQL RiskAssessments."""
+        # Ensure ID is formatted for GraphQL
+        gid = shopify_order_id
+        if not str(gid).startswith("gid://"):
+            gid = f"gid://shopify/Order/{shopify_order_id}"
+            
+        # We query riskAssessments as per modern API to get the detailed analysis
+        query = """
+        {
+          order(id: "%s") {
+            riskAssessments(first: 5) {
+              nodes {
+                riskLevel
+              }
+            }
+          }
+        }
+        """ % gid
+        
+        data = self.graphql_query(query)
+        try:
+            order_data = data.get("data", {}).get("order") or {}
+            assessments = order_data.get("riskAssessments", {}).get("nodes", [])
+            
+            # Determine aggregate risk (High > Medium > Low)
+            has_high = any(a.get("riskLevel") == "HIGH" for a in assessments)
+            if has_high:
+                return "HIGH"
+                
+            has_medium = any(a.get("riskLevel") == "MEDIUM" for a in assessments)
+            if has_medium:
+                return "MEDIUM"
+                
+            return "LOW"
+        except Exception as e:
+            _logger.error("Failed to fetch risk level for %s: %s", shopify_order_id, e)
+            return "LOW"
+

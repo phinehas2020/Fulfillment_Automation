@@ -34,6 +34,7 @@
                         <field name="order_name"/>
                         <field name="order_number"/>
                         <field name="shopify_id" readonly="1"/>
+                        <field name="shopify_risk_level" widget="badge" decoration-danger="shopify_risk_level == 'HIGH'" decoration-warning="shopify_risk_level == 'MEDIUM'" decoration-success="shopify_risk_level == 'LOW'"/>
                         <field name="source"/>
                         <field name="created_at"/>
                     </group>

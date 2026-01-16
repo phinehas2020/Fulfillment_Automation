@@ -51,6 +51,11 @@ class ShopifyOrder(models.Model):
     created_at = fields.Datetime()
     raw_payload = fields.Text()
     requested_shipping_method = fields.Char(string="Requested Shipping Method")
+    shopify_risk_level = fields.Selection(
+        [("HIGH", "High"), ("MEDIUM", "Medium"), ("LOW", "Low")], 
+        string="Shopify Risk Level",
+        help="Risk level fetched from Shopify (High, Medium, Low)"
+    )
 
     def read(self, fields=None, load="_classic_read"):
         """Override read to sync status from Shopify on load."""
@@ -127,6 +132,71 @@ class ShopifyOrder(models.Model):
             order.total_weight = total_weight
             order.total_items = total_items
 
+    def _is_high_risk(self):
+        """Check for high risk factors using Shopify Risk Level."""
+        if not self.shopify_risk_level:
+             # Fetch it if missing
+             try:
+                 api = self._get_shopify_api()
+                 risk = api.get_risk_level(self.shopify_id)
+                 # Write immediately to save for future
+                 self.sudo().write({"shopify_risk_level": risk})
+                 # If HIGH, return True
+                 if risk == 'HIGH':
+                     return True
+             except Exception as e:
+                 _logger.error("Failed to fetch risk level: %s", e)
+                 
+        return self.shopify_risk_level == 'HIGH'
+
+    def _send_risk_notification(self):
+        """Send email to risk reviewer."""
+        ICP = self.env['ir.config_parameter'].sudo()
+        reviewer_id_str = ICP.get_param('fulfillment.risk_reviewer_id')
+        if not reviewer_id_str:
+            _logger.info("No risk reviewer configured. Skipping notification.")
+            return
+            
+        try:
+            reviewer_id = int(reviewer_id_str)
+            reviewer = self.env['res.users'].browse(reviewer_id)
+        except (ValueError, TypeError):
+            _logger.error("Invalid risk reviewer ID configured: %s", reviewer_id_str)
+            return
+
+        if not reviewer or not reviewer.email:
+             _logger.warning("Risk reviewer has no email configured.")
+             return
+
+        subject = f"URGENT: High Risk Order Flagged - {self.name_get()[0][1]}"
+        body = f"""
+        <div style="font-family: Arial, sans-serif;">
+            <h2>High Risk Order Detected</h2>
+            <p><strong>Order:</strong> {self.order_name}</p>
+            <p><strong>Shopify Risk Level:</strong> <span style="color: red; font-weight: bold;">{self.shopify_risk_level}</span></p>
+            <p><strong>Customer:</strong> {self.customer_name}</p>
+            <p><strong>Address:</strong><br/>
+               {self.shipping_address_line1}<br/>
+               {self.shipping_address_line2 or ''}<br/>
+               {self.shipping_city}, {self.shipping_state} {self.shipping_zip}
+            </p>
+            <p>This order has been flagged by Shopify as High Risk. Please verify it in Odoo before manual processing.</p>
+            <p><a href="/web#id={self.id}&model=shopify.order&view_type=form">View Order</a></p>
+        </div>
+        """
+        
+        mail_values = {
+            'subject': subject,
+            'body_html': body,
+            'email_to': reviewer.email,
+            'email_from': self.env.user.email_formatted or 'noreply@yourcompany.com',
+        }
+        try:
+            self.env['mail.mail'].create(mail_values).send()
+            _logger.info("Risk notification sent to %s", reviewer.email)
+        except Exception as e:
+            _logger.error("Failed to send risk notification: %s", e)
+
     def action_sync_status(self):
         """Manual action to sync status from Shopify."""
         # Use existing logic but ensure we force it
@@ -151,6 +221,17 @@ class ShopifyOrder(models.Model):
 
     def _process_order_inner(self):
         self.ensure_one()
+
+        # Step 0: Risk Check
+        if self._is_high_risk():
+            _logger.warning("Order %s flagged as high risk. Stopping processing.", self.id)
+            self.write({
+                "state": "manual_required", 
+                "error_message": "Flagged as High Risk/Spam. Notification sent for verification."
+            })
+            self._send_risk_notification()
+            return
+
         if not self.line_ids:
             raise exceptions.UserError("Order has no line items")
 

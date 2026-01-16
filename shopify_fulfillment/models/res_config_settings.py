@@ -31,3 +31,9 @@ class ResConfigSettings(models.TransientModel):
         string="Source Stock Location",
         domain=[('usage', '=', 'internal')]
     )
+    fulfillment_risk_reviewer_id = fields.Many2one(
+        'res.users',
+        config_parameter='fulfillment.risk_reviewer_id',
+        string="Risk Reviewer (Email Notification)",
+        help="Employee to notify when an order is flagged as high risk or address issues."
+    )

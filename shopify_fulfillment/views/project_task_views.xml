@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_task_form_inherit_shopify" model="ir.ui.view">
+        <field name="name">project.task.form.inherit.shopify</field>
+        <field name="model">project.task</field>
+        <field name="inherit_id" ref="project.view_task_form2"/>
+        <field name="arch" type="xml">
+            <header position="inside">
+                <button name="action_fulfillment_deduct_inventory" 
+                        type="object" 
+                        string="Deduct Inventory" 
+                        invisible="not is_fulfillment_task or fulfillment_inventory_deducted"
+                        class="oe_highlight"/>
+            </header>
+            <xpath expr="//field[@name='user_ids']" position="after">
+                <field name="is_fulfillment_task" invisible="1"/>
+                <field name="shopify_order_id" invisible="not is_fulfillment_task" readonly="1"/>
+                <field name="fulfillment_inventory_deducted" invisible="not is_fulfillment_task" widget="boolean_toggle"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

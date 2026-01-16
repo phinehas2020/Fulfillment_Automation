@@ -1,5 +1,8 @@
+import logging
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 class ProjectTask(models.Model):
     _inherit = "project.task"
@@ -16,6 +19,8 @@ class ProjectTask(models.Model):
             
         if self.fulfillment_inventory_deducted:
             return
+
+        _logger.info("Starting inventory deduction for task %s (Order: %s)", self.id, self.shopify_order_id.order_name)
 
         # Get configuration
         ICP = self.env["ir.config_parameter"].sudo()
@@ -52,20 +57,39 @@ class ProjectTask(models.Model):
         
         moves = []
         # We need to look at the order lines from the linked order
-        # Since we don't duplicate them onto the task, we read them from order_id
         for line in self.shopify_order_id.line_ids:
             if not line.requires_shipping:
+                _logger.info("Skipping line %s: No shipping required", line.title)
+                continue
+
+            sku = (line.sku or "").strip()
+            if not sku:
+                self.message_post(body=_("Skipping item '%s' - No SKU provided.") % line.title)
                 continue
 
             # Match product by SKU (internal_reference)
-            product = self.env['product.product'].search([('default_code', '=', line.sku)], limit=1)
+            # 1. Exact match
+            product = self.env['product.product'].search([('default_code', '=', sku)], limit=1)
+            
+            # 2. Case-insensitive match if not found
             if not product:
-                # Fallback: maybe it's on the template?
-                product = self.env['product.product'].search([('product_tmpl_id.default_code', '=', line.sku)], limit=1)
+                product = self.env['product.product'].search([('default_code', '=ilike', sku)], limit=1)
+            
+            # 3. Fallback: Template exact match
+            if not product:
+                product = self.env['product.product'].search([('product_tmpl_id.default_code', '=', sku)], limit=1)
+            
+            # 4. Fallback: Template case-insensitive match
+            if not product:
+                product = self.env['product.product'].search([('product_tmpl_id.default_code', '=ilike', sku)], limit=1)
             
             if not product:
-                self.message_post(body=_("Could not find Odoo product for SKU: %s. Inventory was not decremented for this item.") % line.sku)
+                msg = _("Could not find Odoo product for SKU: '%s' (Item: %s). Inventory was not decremented for this item.") % (sku, line.title)
+                self.message_post(body=msg)
+                _logger.warning("Order %s: %s", self.shopify_order_id.order_name, msg)
                 continue
+
+            _logger.info("Found product %s for SKU %s", product.display_name, sku)
 
             move_vals = {
                 'name': product.name,
@@ -80,41 +104,48 @@ class ProjectTask(models.Model):
 
         if not moves:
             picking.unlink()
-            # If no moves, maybe we just mark it as done anyway?
-            # But let's warn.
-            self.message_post(body=_("No matching items found to deduct inventory."))
-            self.fulfillment_inventory_deducted = True
+            _logger.warning("No moves created for picking. Picking unlinked.")
+            # We DON'T mark it as deducted so the user can fix and try again
+            self.message_post(body=_("No matching items found in Odoo for any of the order lines. Inventory deduction skipped. Please check your product SKUs."))
             return
 
         # Validate the picking
-        picking.action_confirm()
-        picking.action_assign()
-        
-        for move in picking.move_ids:
-            move.quantity = move.product_uom_qty
-            move.picked = True
+        try:
+            picking.action_confirm()
+            picking.action_assign()
             
-        picking.button_validate()
-
-        self.fulfillment_inventory_deducted = True
-        self.message_post(body=_("Inventory successfully deducted (Delivery: %s)") % picking.name)
+            # Handle both Odoo 16 and 17 field names if possible, but prioritize 17
+            for move in picking.move_ids:
+                if hasattr(move, 'quantity'): # Odoo 17+
+                    move.quantity = move.product_uom_qty
+                elif hasattr(move, 'quantity_done'): # Odoo 16
+                    move.quantity_done = move.product_uom_qty
+                
+                if hasattr(move, 'picked'):
+                    move.picked = True
+                
+            picking.button_validate()
+            self.fulfillment_inventory_deducted = True
+            self.message_post(body=_("Inventory successfully deducted (Delivery: %s)") % picking.name)
+            _logger.info("Inventory successfully deducted for Order %s", self.shopify_order_id.order_name)
+        except Exception as e:
+            _logger.exception("Failed to validate picking for task %s", self.id)
+            self.message_post(body=_("Failed to validate inventory delivery: %s") % str(e))
+            # Keep the picking around so it can be fixed manually if needed
+            # But don't mark as deducted
 
     def write(self, vals):
         res = super().write(vals)
         # Check if task is being marked as done
-        # State logic depends on Odoo version, but universally 'state' field or 'stage_id'
-        # In Odoo 16/17 Project Task:
-        # state selection: [('01_in_progress', 'In Progress'), ('1_done', 'Done'), ('04_waiting_normal', 'Waiting'), ...]
-        # OR simple stages.
-        
-        # Let's check for state='1_done' if it exists, or check 'state' generally
         if 'state' in vals and vals['state'] in ['1_done', 'done']:
              for task in self:
-                 if task.is_fulfillment_task and not task.fulfillment_inventory_deducted:
-                     try:
-                         task.action_fulfillment_deduct_inventory()
-                     except Exception as e:
-                         # Don't block the write, but log it
-                         task.message_post(body=_("Failed to auto-deduct inventory: %s") % str(e))
+                  if task.is_fulfillment_task and not task.fulfillment_inventory_deducted:
+                      try:
+                          task.action_fulfillment_deduct_inventory()
+                      except Exception as e:
+                          # Don't block the write
+                          _logger.exception("Error in auto-deduct inventory on write")
+                          task.message_post(body=_("Background error during inventory deduction: %s") % str(e))
         
         return res
+
