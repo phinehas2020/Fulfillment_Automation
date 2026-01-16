@@ -4,7 +4,7 @@
         <field name="name">shopify.order.list</field>
         <field name="model">shopify.order</field>
         <field name="arch" type="xml">
-            <list>
+            <tree>
                 <field name="order_name"/>
                 <field name="order_number"/>
                 <field name="customer_name"/>
@@ -13,7 +13,7 @@
                 <field name="total_items"/>
                 <field name="total_weight"/>
                 <field name="created_at"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -106,13 +106,13 @@
         <field name="name">shopify.order.line.inline.tree</field>
         <field name="model">shopify.order.line</field>
         <field name="arch" type="xml">
-            <list editable="bottom">
+            <tree editable="bottom">
                 <field name="sku"/>
                 <field name="title"/>
                 <field name="quantity"/>
                 <field name="weight"/>
                 <field name="requires_shipping"/>
-            </list>
+            </tree>
         </field>
     </record>
 </odoo>
