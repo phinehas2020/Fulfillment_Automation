@@ -57,6 +57,12 @@ class ShopifyWebhookController(http.Controller):
             existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
             return {"status": "duplicate", "order_id": existing.id if existing else False}
         
+        # Create/update customer in Odoo database
+        try:
+            order._create_or_update_partner()
+        except Exception as partner_err:
+            _logger.warning("Failed to create partner for order %s: %s", order.id, partner_err)
+        
         # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
         auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
         if auto_process.lower() in ("true", "1", "yes"):

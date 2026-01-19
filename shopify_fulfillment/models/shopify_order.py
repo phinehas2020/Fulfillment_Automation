@@ -213,6 +213,79 @@ class ShopifyOrder(models.Model):
         except Exception as e:
             raise exceptions.UserError(f"Sync failed: {e}")
 
+    def _create_or_update_partner(self):
+        """Create or update res.partner from Shopify order data to build customer database."""
+        self.ensure_one()
+        
+        # Extract customer ID from raw payload if available
+        payload = {}
+        if self.raw_payload:
+            try:
+                import json
+                payload = json.loads(self.raw_payload)
+            except Exception:
+                pass
+        
+        customer_data = payload.get("customer", {})
+        shopify_customer_id = str(customer_data.get("id", "")) if customer_data else ""
+        
+        # Also try to get email from customer data if not on order
+        customer_email = self.email or customer_data.get("email", "")
+        
+        Partner = self.env["res.partner"].sudo()
+        partner = None
+        
+        # Try to find existing partner by Shopify customer ID
+        if shopify_customer_id:
+            partner = Partner.search([("shopify_customer_id", "=", shopify_customer_id)], limit=1)
+        
+        # Fallback: find by email (case-insensitive)
+        if not partner and customer_email:
+            partner = Partner.search([("email", "=ilike", customer_email)], limit=1)
+        
+        # Build partner values
+        vals = {
+            "name": self.customer_name or "Unknown Customer",
+            "email": customer_email,
+            "phone": self.shipping_phone,
+            "street": self.shipping_address_line1,
+            "street2": self.shipping_address_line2,
+            "city": self.shipping_city,
+            "zip": self.shipping_zip,
+            "customer_rank": 1,  # Mark as customer
+        }
+        
+        # Set state if available
+        if self.shipping_state:
+            state = self.env["res.country.state"].search([
+                ("code", "=", self.shipping_state),
+                ("country_id.code", "=", self.shipping_country or "US")
+            ], limit=1)
+            if state:
+                vals["state_id"] = state.id
+        
+        # Set country if available
+        if self.shipping_country:
+            country = self.env["res.country"].search([("code", "=", self.shipping_country)], limit=1)
+            if country:
+                vals["country_id"] = country.id
+        
+        # Add Shopify customer ID if we have it
+        if shopify_customer_id:
+            vals["shopify_customer_id"] = shopify_customer_id
+        
+        if partner:
+            # Update existing (only update fields that have values)
+            update_vals = {k: v for k, v in vals.items() if v}
+            partner.write(update_vals)
+            _logger.debug("Updated existing partner %s for order %s", partner.id, self.order_name)
+        else:
+            # Create new partner
+            partner = Partner.create(vals)
+            _logger.info("Created new partner %s (%s) for order %s", partner.id, partner.name, self.order_name)
+        
+        return partner
+
     @api.model
     def action_import_from_shopify(self):
         """
@@ -256,6 +329,12 @@ class ShopifyOrder(models.Model):
                 order = self.create(order_vals)
                 imported_count += 1
                 _logger.info("Imported order %s (%s)", order.order_name, shopify_id)
+                
+                # Create/update customer in Odoo database
+                try:
+                    order._create_or_update_partner()
+                except Exception as partner_err:
+                    _logger.warning("Failed to create partner for order %s: %s", shopify_id, partner_err)
                 
                 # Check if auto-processing is enabled
                 ICP = self.env["ir.config_parameter"].sudo()
@@ -346,6 +425,12 @@ class ShopifyOrder(models.Model):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
         for order in self:
             try:
+                # Ensure customer is in Odoo database before processing
+                try:
+                    order._create_or_update_partner()
+                except Exception as partner_err:
+                    _logger.warning("Failed to create partner for order %s during process: %s", order.id, partner_err)
+                
                 order._process_order_inner()
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception("Order processing failed for %s", order.id)
@@ -439,6 +524,14 @@ class ShopifyOrder(models.Model):
         
         if shippo:
             rates = shippo.get_rates(self, box, self.env.company)
+            
+            # Filter out excluded shipping services
+            # Broad check for "Ground Saver" in the service name to avoid exact match issues
+            original_count = len(rates)
+            rates = [r for r in rates if "ground saver" not in (r.get("servicelevel", {}).get("name") or "").lower()]
+            if original_count != len(rates):
+                _logger.info("Order %s: Filtered out %d excluded services (Target: Ground Saver)", self.id, original_count - len(rates))
+            
             if not rates:
                 msg = "Shippo returned no rates (Check address/credentials)"
                 _logger.warning("Order %s: %s", self.id, msg)
