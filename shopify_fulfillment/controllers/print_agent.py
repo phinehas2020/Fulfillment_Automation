@@ -143,7 +143,7 @@ class PrintAgentController(http.Controller):
                         description += f"<li>[{line.sku or 'NO SKU'}] <b>{line.title}</b> x{line.quantity}</li>"
                 description += "</ul>"
                 
-                name = job.order_id.customer_name or f"Pack Order {job.order_id.order_name or job.order_id.order_number}"
+                name = f"Pack Order {job.order_id.order_name or job.order_id.order_number}"
                 
                 vals = {
                     "name": name,
