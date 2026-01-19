@@ -60,6 +60,7 @@
                             <group>
                                 <field name="box_id"/>
                                 <field name="shipment_id" readonly="1"/>
+                                <field name="sale_order_id" readonly="1"/>
                             </group>
                         </page>
                         <page string="Print Jobs">

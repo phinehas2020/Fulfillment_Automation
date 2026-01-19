@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Optional
 
@@ -60,10 +61,130 @@ class ShopifyOrder(models.Model):
     inventory_deducted = fields.Boolean(
         string="Inventory Deducted", 
         compute="_compute_inventory_status", 
-        store=True,  # Changed to store=True to allow manual override/tracking if needed, but keeps compute
+        store=True,
         readonly=True,
         help="Indicates if inventory has been deducted via a fulfillment task."
     )
+    sale_order_id = fields.Many2one(
+        "sale.order",
+        string="Sale Order",
+        readonly=True,
+        help="Linked Odoo Sale Order created upon fulfillment"
+    )
+
+    def _create_sale_order(self):
+        """Create an Odoo sale.order from this Shopify order."""
+        self.ensure_one()
+        
+        if self.sale_order_id:
+            return self.sale_order_id  # Already exists
+        
+        # Find or create partner
+        partner = self._create_or_update_partner()
+        if not partner:
+            _logger.warning("Could not create partner for order %s", self.order_name)
+            return False
+        
+        # Parse raw payload for prices
+        payload = {}
+        if self.raw_payload:
+            try:
+                payload = json.loads(self.raw_payload)
+            except Exception:
+                pass
+        
+        line_items_data = {str(li.get("id")): li for li in payload.get("line_items", [])}
+        
+        # Prepare sale order lines
+        order_lines = []
+        for line in self.line_ids:
+            if not line.requires_shipping:
+                continue
+                
+            sku = (line.sku or "").strip()
+            product = None
+            
+            # Find product by SKU (multiple strategies)
+            if sku:
+                # 1. Exact match on product variant
+                product = self.env["product.product"].search([
+                    ("default_code", "=", sku)
+                ], limit=1)
+                
+                # 2. Case-insensitive match
+                if not product:
+                    product = self.env["product.product"].search([
+                        ("default_code", "=ilike", sku)
+                    ], limit=1)
+                
+                # 3. Template exact match
+                if not product:
+                    product = self.env["product.product"].search([
+                        ("product_tmpl_id.default_code", "=", sku)
+                    ], limit=1)
+                
+                # 4. Template case-insensitive match
+                if not product:
+                    product = self.env["product.product"].search([
+                        ("product_tmpl_id.default_code", "=ilike", sku)
+                    ], limit=1)
+            
+            if not product:
+                _logger.warning("No product found for SKU '%s' in order %s - skipping line", sku, self.order_name)
+                continue
+            
+            # Get price from Shopify payload
+            price_unit = 0.0
+            line_data = line_items_data.get(str(line.shopify_line_id), {})
+            if line_data:
+                try:
+                    price_unit = float(line_data.get("price", 0))
+                except (ValueError, TypeError):
+                    pass
+            
+            order_lines.append((0, 0, {
+                "product_id": product.id,
+                "product_uom_qty": line.quantity,
+                "price_unit": price_unit,
+                "name": line.title or product.name,
+            }))
+        
+        if not order_lines:
+            _logger.warning("No valid lines for sale order creation: %s", self.order_name)
+            return False
+        
+        # Add shipping line if we have shipment info
+        if self.shipment_id and self.shipment_id.rate_amount:
+            shipping_product = self.env["product.product"].search([
+                ("default_code", "=", "SHIPPING")
+            ], limit=1)
+            
+            if shipping_product:
+                carrier_info = f"{self.shipment_id.carrier or ''} {self.shipment_id.service or ''}".strip()
+                order_lines.append((0, 0, {
+                    "product_id": shipping_product.id,
+                    "product_uom_qty": 1,
+                    "price_unit": self.shipment_id.rate_amount,
+                    "name": f"Shipping - {carrier_info}" if carrier_info else "Shipping",
+                }))
+        
+        # Create the sale order
+        sale_vals = {
+            "partner_id": partner.id,
+            "origin": self.order_name or self.order_number,
+            "client_order_ref": self.shopify_id,
+            "order_line": order_lines,
+        }
+        
+        sale_order = self.env["sale.order"].create(sale_vals)
+        
+        # Confirm the sale order (move from draft to sale)
+        sale_order.action_confirm()
+        
+        self.sale_order_id = sale_order.id
+        
+        _logger.info("Created sale order %s for Shopify order %s", sale_order.name, self.order_name)
+        return sale_order
 
     def action_create_fulfillment_task(self):
         """Manually create a fulfillment task for this order."""

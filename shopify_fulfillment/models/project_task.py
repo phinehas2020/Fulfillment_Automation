@@ -128,11 +128,22 @@ class ProjectTask(models.Model):
             self.fulfillment_inventory_deducted = True
             self.message_post(body=_("Inventory successfully deducted (Delivery: %s)") % picking.name)
             _logger.info("Inventory successfully deducted for Order %s", self.shopify_order_id.order_name)
+            
+            # Create Sale Order
+            try:
+                sale_order = self.shopify_order_id._create_sale_order()
+                if sale_order:
+                    self.message_post(body=_("Sale Order created: %s") % sale_order.name)
+            except Exception as so_err:
+                _logger.warning("Failed to create sale order for %s: %s", self.shopify_order_id.order_name, so_err)
+                self.message_post(body=_("Sale order creation failed: %s") % str(so_err))
+                
         except Exception as e:
             _logger.exception("Failed to validate picking for task %s", self.id)
             self.message_post(body=_("Failed to validate inventory delivery: %s") % str(e))
             # Keep the picking around so it can be fixed manually if needed
             # But don't mark as deducted
+
 
     @api.model_create_multi
     def create(self, vals_list):

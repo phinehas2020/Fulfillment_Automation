@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Shipping Cost Service Product -->
+    <record id="product_shipping_cost" model="product.product">
+        <field name="name">Shipping Cost</field>
+        <field name="default_code">SHIPPING</field>
+        <field name="type">service</field>
+        <field name="list_price">0</field>
+        <field name="sale_ok">True</field>
+        <field name="purchase_ok">False</field>
+        <field name="categ_id" ref="product.product_category_all"/>
+    </record>
+</odoo>
