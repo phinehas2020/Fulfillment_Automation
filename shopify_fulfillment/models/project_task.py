@@ -134,6 +134,18 @@ class ProjectTask(models.Model):
             # Keep the picking around so it can be fixed manually if needed
             # But don't mark as deducted
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        tasks = super().create(vals_list)
+        for task in tasks:
+            if task.is_fulfillment_task and task.state in ['1_done', 'done'] and not task.fulfillment_inventory_deducted:
+                try:
+                    task.action_fulfillment_deduct_inventory()
+                except Exception as e:
+                    _logger.exception("Error in auto-deduct inventory on create")
+                    task.message_post(body=_("Background error during inventory deduction: %s") % str(e))
+        return tasks
+
     def write(self, vals):
         res = super().write(vals)
         # Check if task is being marked as done

@@ -67,7 +67,21 @@
                         </page>
                         <page string="Inventory Status" name="inventory_status">
                             <group>
-                                <field name="inventory_deducted" widget="boolean_toggle" readonly="1"/>
+                                <group>
+                                    <field name="inventory_deducted" widget="boolean_toggle" readonly="1"/>
+                                </group>
+                                <group>
+                                    <button name="action_create_fulfillment_task" 
+                                            type="object" 
+                                            string="Generate Packing Task" 
+                                            class="btn-primary"
+                                            invisible="fulfillment_task_ids"/>
+                                    <button name="action_manual_inventory_deduction" 
+                                            type="object" 
+                                            string="Deduct Inventory Now" 
+                                            class="oe_highlight"
+                                            invisible="inventory_deducted"/>
+                                </group>
                             </group>
                             <separator string="Fulfillment Tasks"/>
                             <field name="fulfillment_task_ids" readonly="1">

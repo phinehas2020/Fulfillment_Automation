@@ -60,9 +60,73 @@ class ShopifyOrder(models.Model):
     inventory_deducted = fields.Boolean(
         string="Inventory Deducted", 
         compute="_compute_inventory_status", 
-        store=False,
+        store=True,  # Changed to store=True to allow manual override/tracking if needed, but keeps compute
+        readonly=True,
         help="Indicates if inventory has been deducted via a fulfillment task."
     )
+
+    def action_create_fulfillment_task(self):
+        """Manually create a fulfillment task for this order."""
+        self.ensure_one()
+        Task = self.env["project.task"]
+        existing = Task.search([("shopify_order_id", "=", self.id), ("is_fulfillment_task", "=", True)], limit=1)
+        if existing:
+            raise exceptions.UserError("A fulfillment task already exists for this order.")
+
+        ICP = self.env["ir.config_parameter"].sudo()
+        default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
+        user_ids = [int(default_user_id_raw)] if default_user_id_raw else []
+
+        description = "<ul>"
+        for line in self.line_ids:
+            if line.requires_shipping:
+                description += f"<li>[{line.sku or 'NO SKU'}] <b>{line.title}</b> x{line.quantity}</li>"
+        description += "</ul>"
+
+        task = Task.create({
+            "name": f"Pack Order {self.order_name or self.order_number}",
+            "description": description,
+            "user_ids": [(6, 0, user_ids)],
+            "shopify_order_id": self.id,
+            "is_fulfillment_task": True,
+        })
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "project.task",
+            "res_id": task.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
+    def action_manual_inventory_deduction(self):
+        """Force inventory deduction by finding or creating a task and running its deduction logic."""
+        self.ensure_one()
+        if self.inventory_deducted:
+            raise exceptions.UserError("Inventory has already been marked as deducted for this order.")
+
+        Task = self.env["project.task"]
+        task = Task.search([("shopify_order_id", "=", self.id), ("is_fulfillment_task", "=", True)], limit=1)
+        
+        if not task:
+            # Create a silent fulfillment task to perform the deduction
+            ICP = self.env["ir.config_parameter"].sudo()
+            default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
+            user_ids = [int(default_user_id_raw)] if default_user_id_raw else []
+            
+            task = Task.create({
+                "name": f"Inventory Deduction (Manual) - {self.order_name}",
+                "shopify_order_id": self.id,
+                "is_fulfillment_task": True,
+                "user_ids": [(6, 0, user_ids)],
+                "state": "1_done", # Mark as done immediately
+            })
+            # The write override in project_task should trigger action_fulfillment_deduct_inventory
+        else:
+            # Trigger it manually on the existing task
+            task.action_fulfillment_deduct_inventory()
+            
+        self._compute_inventory_status()
+        return True
 
     @api.depends("fulfillment_task_ids.fulfillment_inventory_deducted")
     def _compute_inventory_status(self):
