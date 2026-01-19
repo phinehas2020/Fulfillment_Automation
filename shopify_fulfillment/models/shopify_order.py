@@ -425,6 +425,12 @@ class ShopifyOrder(models.Model):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
         for order in self:
             try:
+                # Ensure customer is in Odoo database before processing
+                try:
+                    order._create_or_update_partner()
+                except Exception as partner_err:
+                    _logger.warning("Failed to create partner for order %s during process: %s", order.id, partner_err)
+                
                 order._process_order_inner()
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception("Order processing failed for %s", order.id)
@@ -520,11 +526,11 @@ class ShopifyOrder(models.Model):
             rates = shippo.get_rates(self, box, self.env.company)
             
             # Filter out excluded shipping services
-            EXCLUDED_SERVICES = ["UPS Ground Saver"]
+            # Broad check for "Ground Saver" in the service name to avoid exact match issues
             original_count = len(rates)
-            rates = [r for r in rates if r.get("servicelevel", {}).get("name") not in EXCLUDED_SERVICES]
+            rates = [r for r in rates if "ground saver" not in (r.get("servicelevel", {}).get("name") or "").lower()]
             if original_count != len(rates):
-                _logger.info("Order %s: Filtered out %d excluded services", self.id, original_count - len(rates))
+                _logger.info("Order %s: Filtered out %d excluded services (Target: Ground Saver)", self.id, original_count - len(rates))
             
             if not rates:
                 msg = "Shippo returned no rates (Check address/credentials)"
