@@ -5,6 +5,9 @@
         <field name="model">shopify.order</field>
         <field name="arch" type="xml">
             <list>
+                <header>
+                    <button name="action_import_from_shopify" type="object" string="Sync Orders from Shopify" class="btn-primary"/>
+                </header>
                 <field name="order_name"/>
                 <field name="order_number"/>
                 <field name="customer_name"/>
