@@ -9,5 +9,6 @@
         <field name="sale_ok">True</field>
         <field name="purchase_ok">False</field>
         <field name="categ_id" ref="product.product_category_all"/>
+        <field name="base_unit_count">1</field>
     </record>
 </odoo>
