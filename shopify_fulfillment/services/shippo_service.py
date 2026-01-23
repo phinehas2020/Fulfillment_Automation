@@ -113,6 +113,107 @@ class ShippoService:
             _logger.exception("Failed to connect to Shippo: %s", e)
             return []
 
+    def get_rates_for_box(self, order, box, total_weight_grams: float, sender_company):
+        """Get shipping rates for a specific box with explicit weight.
+
+        This method is used for multi-box shipments where each box has its own
+        weight calculated by the packing algorithm.
+
+        Args:
+            order: shopify.order record (for addresses)
+            box: fulfillment.box record (for dimensions)
+            total_weight_grams: Pre-calculated total weight including box (in grams)
+            sender_company: res.company record (sender address)
+
+        Returns:
+            List of rate objects from Shippo
+        """
+        url = f"{self.API_URL}/shipments"
+
+        # Prepare addresses (same as get_rates)
+        address_to = {
+            "name": order.customer_name or "Customer",
+            "street1": order.shipping_address_line1 or "",
+            "street2": order.shipping_address_line2 or "",
+            "city": order.shipping_city or "",
+            "state": order.shipping_state or "",
+            "zip": order.shipping_zip or "",
+            "country": order.shipping_country or "US",
+            "phone": order.shipping_phone or "",
+            "email": order.email or "no-reply@example.com",
+        }
+
+        address_from = {
+            "name": sender_company.name,
+            "street1": sender_company.street or "",
+            "street2": sender_company.street2 or "",
+            "city": sender_company.city or "",
+            "state": sender_company.state_id.code if sender_company.state_id else "",
+            "zip": sender_company.zip or "",
+            "country": sender_company.country_id.code if sender_company.country_id else "US",
+            "phone": sender_company.phone or self.shipper_phone,
+            "email": sender_company.email or "no-reply@example.com",
+        }
+
+        # Prepare parcel with explicit weight (already includes box weight)
+        parcel = {
+            "length": box.length,
+            "width": box.width,
+            "height": box.height,
+            "distance_unit": "in",
+            "weight": total_weight_grams,
+            "mass_unit": "g",
+        }
+
+        payload = {
+            "address_from": address_from,
+            "address_to": address_to,
+            "parcels": [parcel],
+            "async": False,
+        }
+
+        _logger.info(
+            "Shippo (multi-box): Creating shipment for Order %s, Box %s",
+            order.id,
+            box.name,
+        )
+        _logger.info(
+            "Shippo: Parcel: %sx%sx%s in, %.0f g",
+            parcel["length"],
+            parcel["width"],
+            parcel["height"],
+            parcel["weight"],
+        )
+
+        try:
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            _logger.info("Shippo: Response status: %s", resp.status_code)
+
+            if resp.status_code >= 400:
+                _logger.error("Shippo Error: %s", resp.text)
+                return []
+
+            data = resp.json()
+            rates = data.get("rates", [])
+            messages = data.get("messages", [])
+
+            _logger.info("Shippo: Got %d rates for box %s", len(rates), box.name)
+            if messages:
+                _logger.warning("Shippo messages: %s", messages)
+            if rates:
+                for r in rates[:3]:
+                    _logger.info(
+                        "  Rate: %s %s - $%s",
+                        r.get("provider"),
+                        r.get("servicelevel", {}).get("name"),
+                        r.get("amount"),
+                    )
+
+            return rates
+        except Exception as e:
+            _logger.exception("Failed to connect to Shippo: %s", e)
+            return []
+
     def purchase_label(self, rate_obj):
         """
         Purchase the label for the given rate object (from get_rates).

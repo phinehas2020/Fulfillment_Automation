@@ -15,6 +15,7 @@
                 <field name="source"/>
                 <field name="total_items"/>
                 <field name="total_weight"/>
+                <field name="box_count" string="Boxes"/>
                 <field name="created_at"/>
             </list>
         </field>
@@ -58,9 +59,28 @@
                         </page>
                         <page string="Shipment">
                             <group>
-                                <field name="box_id"/>
-                                <field name="shipment_id" readonly="1"/>
-                                <field name="sale_order_id" readonly="1"/>
+                                <group>
+                                    <field name="box_count" string="Number of Boxes"/>
+                                    <field name="is_multi_box" invisible="1"/>
+                                    <field name="sale_order_id" readonly="1"/>
+                                </group>
+                                <group invisible="is_multi_box">
+                                    <field name="box_id"/>
+                                    <field name="shipment_id" readonly="1"/>
+                                </group>
+                            </group>
+                            <group invisible="not is_multi_box">
+                                <field name="shipment_ids" nolabel="1" readonly="1">
+                                    <list>
+                                        <field name="sequence" string="Box #"/>
+                                        <field name="box_id"/>
+                                        <field name="tracking_number"/>
+                                        <field name="carrier"/>
+                                        <field name="service"/>
+                                        <field name="rate_amount" string="Cost"/>
+                                        <field name="total_weight" string="Weight (g)"/>
+                                    </list>
+                                </field>
                             </group>
                         </page>
                         <page string="Print Jobs">

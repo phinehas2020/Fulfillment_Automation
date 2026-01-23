@@ -48,6 +48,27 @@ class ShopifyOrder(models.Model):
     shipment_id = fields.Many2one("fulfillment.shipment", string="Shipment")
     print_job_ids = fields.One2many("print.job", "order_id", string="Print Jobs")
     box_id = fields.Many2one("fulfillment.box", string="Selected Box")
+
+    # Multi-box support fields
+    shipment_group_id = fields.Many2one(
+        "fulfillment.shipment.group",
+        string="Shipment Group",
+    )
+    shipment_ids = fields.One2many(
+        "fulfillment.shipment",
+        related="shipment_group_id.shipment_ids",
+        string="Shipments",
+    )
+    is_multi_box = fields.Boolean(
+        compute="_compute_multi_box_info",
+        store=True,
+        string="Multi-Box",
+    )
+    box_count = fields.Integer(
+        compute="_compute_multi_box_info",
+        store=True,
+        string="Box Count",
+    )
     active = fields.Boolean(default=True)
     created_at = fields.Datetime()
     raw_payload = fields.Text()
@@ -323,6 +344,17 @@ class ShopifyOrder(models.Model):
             total_items = sum(l.quantity or 0 for l in order.line_ids)
             order.total_weight = total_weight
             order.total_items = total_items
+
+    @api.depends("shipment_group_id", "shipment_group_id.shipment_ids")
+    def _compute_multi_box_info(self):
+        for order in self:
+            if order.shipment_group_id:
+                count = len(order.shipment_group_id.shipment_ids)
+                order.box_count = count
+                order.is_multi_box = count > 1
+            else:
+                order.box_count = 1 if order.shipment_id else 0
+                order.is_multi_box = False
 
     def _is_high_risk(self):
         """Check for high risk factors using Shopify Risk Level."""
@@ -675,129 +707,98 @@ class ShopifyOrder(models.Model):
 
         self.write({"state": "processing"})
 
-        # Check if shipment already exists to avoid re-purchasing
-        shipment = self.shipment_id
-        if shipment:
-             # Just create a print job and skip rate shopping
-             self.env["print.job"].create(
-                 {
-                     "order_id": self.id,
-                     "shipment_id": shipment.id,
-                     "job_type": "label",
-                     "zpl_data": shipment.label_zpl or "",
-                     "printer_id": False,
-                 }
-             )
-             self.write({"state": "ready_to_ship"})
-             return
-
-        # Box selection
-        box = self._select_box()
-        if not box:
-            msg = f"No box fits order. Total Weight: {self.total_weight}g"
-            _logger.warning("Order %s: %s", self.id, msg)
-            self.write({"state": "manual_required", "error_message": msg})
+        # Check if shipment group already exists (multi-box) or single shipment
+        if self.shipment_group_id:
+            # Re-print existing labels
+            for shipment in self.shipment_group_id.shipment_ids:
+                self.env["print.job"].create({
+                    "order_id": self.id,
+                    "shipment_id": shipment.id,
+                    "job_type": "label",
+                    "zpl_data": shipment.label_zpl or "",
+                    "printer_id": False,
+                })
+            self.write({"state": "ready_to_ship"})
             return
-        self.box_id = box.id
 
-        # Rate Shopping
-        # Import internally to avoid top-level loading issues
+        if self.shipment_id:
+            # Legacy single shipment - just create a print job
+            self.env["print.job"].create({
+                "order_id": self.id,
+                "shipment_id": self.shipment_id.id,
+                "job_type": "label",
+                "zpl_data": self.shipment_id.label_zpl or "",
+                "printer_id": False,
+            })
+            self.write({"state": "ready_to_ship"})
+            return
+
+        # Multi-box packing
+        packing_result = self._pack_order_multi_box()
+
+        if not packing_result.success:
+            self.write({
+                "state": "manual_required",
+                "error_message": packing_result.error_message or "Packing failed"
+            })
+            return
+
+        if not packing_result.packed_boxes:
+            self.write({
+                "state": "manual_required",
+                "error_message": "No boxes assigned - check box configuration"
+            })
+            return
+
+        # Check for oversized items requiring manual intervention
+        if packing_result.has_oversized:
+            oversized_count = sum(1 for pb in packing_result.packed_boxes if pb.is_oversized)
+            self.write({
+                "state": "manual_required",
+                "error_message": f"Order contains {oversized_count} oversized item(s) exceeding box capacity"
+            })
+            return
+
+        # Create shipment group
+        group = self.env["fulfillment.shipment.group"].create({
+            "order_id": self.id,
+        })
+        self.shipment_group_id = group.id
+
+        # Import Shippo service
         from odoo.addons.shopify_fulfillment.services.shippo_service import ShippoService
         shippo = ShippoService.from_env(self.env)
-        
-        shipment_vals = None
-        
-        if shippo:
-            rates = shippo.get_rates(self, box, self.env.company)
-            
-            # Filter out excluded shipping services
-            # Broad check for "Ground Saver" in the service name to avoid exact match issues
-            original_count = len(rates)
-            rates = [r for r in rates if "ground saver" not in (r.get("servicelevel", {}).get("name") or "").lower()]
-            if original_count != len(rates):
-                _logger.info("Order %s: Filtered out %d excluded services (Target: Ground Saver)", self.id, original_count - len(rates))
-            
-            if not rates:
-                msg = "Shippo returned no rates (Check address/credentials)"
-                _logger.warning("Order %s: %s", self.id, msg)
-                self.write({"state": "manual_required", "error_message": msg})
+
+        # Process each packed box
+        shipments_created = []
+        for sequence, packed_box in enumerate(packing_result.packed_boxes, start=1):
+            try:
+                shipment = self._process_single_box(
+                    packed_box=packed_box,
+                    group=group,
+                    sequence=sequence,
+                    shippo=shippo
+                )
+                if shipment:
+                    shipments_created.append(shipment)
+            except Exception as e:
+                _logger.exception("Failed to process box %d for order %s", sequence, self.id)
+                group.write({"state": "error"})
+                self.write({
+                    "state": "error",
+                    "error_message": f"Box {sequence} failed: {str(e)}"
+                })
                 return
-            # Sort by amount
-            cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
-            
-            selected_rate = cheapest
-            if self.requested_shipping_method:
-                _logger.info("Order %s: User requested shipping '%s'", self.id, self.requested_shipping_method)
-                # Try to find a match
-                # User said "ill set up all they same carriors" -> implying exact name match
-                req_norm = self.requested_shipping_method.strip().lower()
-                
-                # First pass: Look for exact match in servicelevel name
-                found = None
-                for r in rates:
-                    s_name = r.get("servicelevel", {}).get("name", "").strip().lower()
-                    if s_name == req_norm:
-                        found = r
-                        break
-                
-                if found:
-                    selected_rate = found
-                    _logger.info("Order %s: Found matching rate for '%s': %s - $%s", 
-                                 self.id, self.requested_shipping_method, 
-                                 found.get("servicelevel", {}).get("name"), found.get("amount"))
-                else:
-                    _logger.warning("Order %s: Requested shipping '%s' not found in rates. Using cheapest.", 
-                                    self.id, self.requested_shipping_method)
 
-            shipment_vals = shippo.purchase_label(selected_rate)
-        else:
-            # Fallback to Mock
-            api_client = self._get_shopify_api()
-            rates = api_client.get_shipping_rates(self)
-            if not rates:
-                msg = "Mock API returned no rates"
-                _logger.warning("Order %s: %s", self.id, msg)
-                self.write({"state": "manual_required", "error_message": msg})
-                return
-            cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
-            shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
+        # Update group state
+        group.write({"state": "complete"})
 
-        if not shipment_vals:
-             # Generic failure
-            raise exceptions.UserError("Label purchase failed (unknown error)")
-            
-        if shipment_vals.get("error"):
-            # Specific failure from provider
-            self.write({"state": "error", "error_message": shipment_vals["error"]})
-            return
+        # Backward compatibility: set shipment_id and box_id to first shipment
+        if shipments_created:
+            self.shipment_id = shipments_created[0].id
+            self.box_id = shipments_created[0].box_id.id
 
-        shipment = self.env["fulfillment.shipment"].create(
-            {
-                "order_id": self.id,
-                "carrier": shipment_vals.get("carrier"),
-                "service": shipment_vals.get("service"),
-                "tracking_number": shipment_vals.get("tracking_number"),
-                "tracking_url": shipment_vals.get("tracking_url"),
-                "label_url": shipment_vals.get("label_url"),
-                "label_zpl": shipment_vals.get("label_zpl"),
-                "rate_amount": shipment_vals.get("rate_amount"),
-                "rate_currency": shipment_vals.get("rate_currency"),
-                "shopify_fulfillment_id": shipment_vals.get("shopify_fulfillment_id"),
-                "purchased_at": fields.Datetime.now(),
-            }
-        )
-        self.shipment_id = shipment.id
-
-        # Create print job
-        self.env["print.job"].create(
-            {
-                "order_id": self.id,
-                "shipment_id": shipment.id,
-                "job_type": "label",
-                "zpl_data": shipment.label_zpl or "",
-                "printer_id": False,
-            }
-        )
+        _logger.info("Order %s: Created %d shipments (multi-box)", self.id, len(shipments_created))
         self.write({"state": "ready_to_ship"})
 
     def _select_box(self) -> Optional[models.Model]:
@@ -838,3 +839,188 @@ class ShopifyOrder(models.Model):
         if self.total_weight:
             return max(self.total_weight / 9.0, 1.0)
         return 1.0
+
+    def _pack_order_multi_box(self):
+        """Run multi-box packing algorithm.
+
+        Returns a PackingResult with packed_boxes list.
+        """
+        from odoo.addons.shopify_fulfillment.services.multi_box_packer import (
+            MultiBoxPacker,
+            PackingResult,
+        )
+
+        boxes = self.env["fulfillment.box"].search([("active", "=", True)])
+        if not boxes:
+            return PackingResult(success=False, error_message="No active boxes configured")
+
+        boxes_data = [
+            {
+                "id": b.id,
+                "name": b.name,
+                "length": b.length,
+                "width": b.width,
+                "height": b.height,
+                "max_weight": b.max_weight,
+                "box_weight": b.box_weight,
+                "volume": b.volume,
+                "priority": b.priority,
+            }
+            for b in boxes
+        ]
+
+        packer = MultiBoxPacker.from_order(self, boxes_data)
+        result = packer.pack()
+
+        _logger.info(
+            "Order %s: Packing result - %d boxes, success=%s",
+            self.id,
+            result.box_count,
+            result.success,
+        )
+        return result
+
+    def _process_single_box(self, packed_box, group, sequence: int, shippo) -> Optional[models.Model]:
+        """Process a single box: rate shop, purchase label, create shipment, print job.
+
+        Args:
+            packed_box: PackedBox instance from packer
+            group: fulfillment.shipment.group record
+            sequence: Box number (1, 2, 3...)
+            shippo: ShippoService instance
+
+        Returns:
+            fulfillment.shipment record or None
+        """
+        box_record = self.env["fulfillment.box"].browse(packed_box.box_spec.box_id)
+        line_ids = packed_box.line_ids
+
+        _logger.info(
+            "Order %s: Processing box %d (%s) - %.0fg, %d items",
+            self.id,
+            sequence,
+            box_record.name,
+            packed_box.total_weight_with_box,
+            len(packed_box.items),
+        )
+
+        shipment_vals = None
+
+        if shippo:
+            # Get rates for this specific box with its weight
+            rates = shippo.get_rates_for_box(
+                order=self,
+                box=box_record,
+                total_weight_grams=packed_box.total_weight_with_box,
+                sender_company=self.env.company,
+            )
+
+            # Filter out excluded shipping services
+            original_count = len(rates)
+            rates = [
+                r
+                for r in rates
+                if "ground saver" not in (r.get("servicelevel", {}).get("name") or "").lower()
+            ]
+            if original_count != len(rates):
+                _logger.info(
+                    "Order %s Box %d: Filtered out %d excluded services",
+                    self.id,
+                    sequence,
+                    original_count - len(rates),
+                )
+
+            if not rates:
+                raise exceptions.UserError(
+                    f"Box {sequence}: Shippo returned no rates (Check address/credentials)"
+                )
+
+            # Select rate (cheapest or requested method)
+            selected_rate = self._select_shipping_rate(rates)
+            shipment_vals = shippo.purchase_label(selected_rate)
+        else:
+            # Fallback to Mock API (for testing)
+            api_client = self._get_shopify_api()
+            rates = api_client.get_shipping_rates(self)
+            if not rates:
+                raise exceptions.UserError(f"Box {sequence}: Mock API returned no rates")
+            cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
+            shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
+
+        if not shipment_vals:
+            raise exceptions.UserError(f"Box {sequence}: Label purchase failed (unknown error)")
+
+        if shipment_vals.get("error"):
+            raise exceptions.UserError(f"Box {sequence}: {shipment_vals['error']}")
+
+        # Create shipment record
+        shipment = self.env["fulfillment.shipment"].create({
+            "order_id": self.id,
+            "group_id": group.id,
+            "box_id": box_record.id,
+            "sequence": sequence,
+            "line_ids": [(6, 0, line_ids)],
+            "total_weight": packed_box.total_weight_with_box,
+            "carrier": shipment_vals.get("carrier"),
+            "service": shipment_vals.get("service"),
+            "tracking_number": shipment_vals.get("tracking_number"),
+            "tracking_url": shipment_vals.get("tracking_url"),
+            "label_url": shipment_vals.get("label_url"),
+            "label_zpl": shipment_vals.get("label_zpl"),
+            "rate_amount": shipment_vals.get("rate_amount"),
+            "rate_currency": shipment_vals.get("rate_currency"),
+            "purchased_at": fields.Datetime.now(),
+        })
+
+        # Create print job
+        self.env["print.job"].create({
+            "order_id": self.id,
+            "shipment_id": shipment.id,
+            "job_type": "label",
+            "zpl_data": shipment.label_zpl or "",
+            "printer_id": False,
+        })
+
+        _logger.info(
+            "Order %s Box %d: Shipment created - %s %s",
+            self.id,
+            sequence,
+            shipment.tracking_number,
+            shipment.carrier,
+        )
+        return shipment
+
+    def _select_shipping_rate(self, rates: list) -> dict:
+        """Select the best shipping rate from available options.
+
+        Prefers requested_shipping_method if set, otherwise cheapest.
+        """
+        if not rates:
+            return {}
+
+        # Sort by amount (cheapest first)
+        cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
+        selected_rate = cheapest
+
+        if self.requested_shipping_method:
+            req_norm = self.requested_shipping_method.strip().lower()
+            for r in rates:
+                s_name = r.get("servicelevel", {}).get("name", "").strip().lower()
+                if s_name == req_norm:
+                    selected_rate = r
+                    _logger.info(
+                        "Order %s: Found matching rate for '%s': %s - $%s",
+                        self.id,
+                        self.requested_shipping_method,
+                        r.get("servicelevel", {}).get("name"),
+                        r.get("amount"),
+                    )
+                    break
+            else:
+                _logger.warning(
+                    "Order %s: Requested shipping '%s' not found. Using cheapest.",
+                    self.id,
+                    self.requested_shipping_method,
+                )
+
+        return selected_rate
