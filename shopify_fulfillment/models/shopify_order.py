@@ -709,17 +709,27 @@ class ShopifyOrder(models.Model):
 
         # Check if shipment group already exists (multi-box) or single shipment
         if self.shipment_group_id:
-            # Re-print existing labels
-            for shipment in self.shipment_group_id.shipment_ids:
-                self.env["print.job"].create({
-                    "order_id": self.id,
-                    "shipment_id": shipment.id,
-                    "job_type": "label",
-                    "zpl_data": shipment.label_zpl or "",
-                    "printer_id": False,
-                })
-            self.write({"state": "ready_to_ship"})
-            return
+            group = self.shipment_group_id
+            shipments_with_labels = group.shipment_ids.filtered(lambda s: s.label_zpl)
+
+            if shipments_with_labels:
+                # Re-print existing labels
+                for shipment in shipments_with_labels:
+                    self.env["print.job"].create({
+                        "order_id": self.id,
+                        "shipment_id": shipment.id,
+                        "job_type": "label",
+                        "zpl_data": shipment.label_zpl or "",
+                        "printer_id": False,
+                    })
+                self.write({"state": "ready_to_ship"})
+                return
+            else:
+                # Previous processing failed - delete empty/failed group and reprocess
+                _logger.info("Order %s: Deleting failed shipment group %s to reprocess", self.id, group.id)
+                group.shipment_ids.unlink()
+                group.unlink()
+                self.shipment_group_id = False
 
         if self.shipment_id:
             # Legacy single shipment - just create a print job
