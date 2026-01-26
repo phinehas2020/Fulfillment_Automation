@@ -7,6 +7,7 @@ import logging
 _logger = logging.getLogger(__name__)
 
 GRAMS_PER_OUNCE = 28.3495
+GRAMS_PER_CUBIC_INCH = 9.0
 
 
 @dataclass
@@ -184,6 +185,46 @@ class MultiBoxPacker:
                     is_oversized=True,
                 )
             )
+
+        # Step 7b: If everything fits in a single box (by weight/volume), prefer 1 box.
+        if not oversized_items:
+            total_weight = sum(item.weight_grams for item in packable_items)
+            total_volume = (
+                total_weight / GRAMS_PER_CUBIC_INCH if total_weight > 0 else 0.0
+            )
+
+            def _box_can_fit_all(box_spec: BoxSpec) -> bool:
+                if total_weight > box_spec.max_weight_grams:
+                    return False
+                if total_volume and box_spec.volume_cubic_inches > 0:
+                    return total_volume <= box_spec.volume_cubic_inches
+                return True
+
+            candidate_boxes = [b for b in sorted_boxes if _box_can_fit_all(b)]
+            if candidate_boxes:
+                def _sort_key(b: BoxSpec):
+                    volume_missing = 1 if b.volume_cubic_inches <= 0 else 0
+                    volume_value = (
+                        b.volume_cubic_inches if b.volume_cubic_inches > 0 else float("inf")
+                    )
+                    return (volume_missing, volume_value, b.max_weight_grams, b.priority)
+
+                best_box = sorted(candidate_boxes, key=_sort_key)[0]
+                _logger.info(
+                    "Packing shortcut: all items fit in one box (%s) - %.0fg, %.0fin³",
+                    best_box.name,
+                    total_weight,
+                    total_volume,
+                )
+                packed_boxes.append(
+                    PackedBox(
+                        box_spec=best_box,
+                        items=packable_items,
+                        total_item_weight=total_weight,
+                        is_oversized=False,
+                    )
+                )
+                return PackingResult(packed_boxes=packed_boxes, unpacked_items=[], success=True)
 
         # Step 8: FFD Bin Packing for remaining items
         # open_bins: list of [box_spec, current_weight, items_list]
