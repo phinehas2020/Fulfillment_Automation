@@ -652,7 +652,9 @@ class ShopifyOrder(models.Model):
                 )
 
             group = order.shipment_group_id
+            group_id = group.id if group else False
             single_shipment = order.shipment_id
+            single_group_id = single_shipment.group_id.id if single_shipment else False
 
             if order.print_job_ids:
                 # Print jobs are not unlinkable by default users, so elevate for cleanup.
@@ -669,11 +671,12 @@ class ShopifyOrder(models.Model):
                 }
             )
 
-            if group:
+            if group_id:
                 group.unlink()
 
-            if single_shipment and (not group or single_shipment.group_id != group):
-                single_shipment.unlink()
+            if single_shipment and (not group_id or single_group_id != group_id):
+                if single_shipment.exists():
+                    single_shipment.unlink()
 
     def process_order(self):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
