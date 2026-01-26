@@ -638,6 +638,43 @@ class ShopifyOrder(models.Model):
         for order in self:
             order.process_order()
 
+    def action_reset_and_reprocess(self):
+        """Reset fulfillment artifacts and re-run processing."""
+        self._reset_fulfillment_state()
+        self.process_order()
+
+    def _reset_fulfillment_state(self):
+        """Clear shipments/print jobs and return order to pending state."""
+        for order in self:
+            if order.state == "processing":
+                raise exceptions.UserError(
+                    "Order is currently processing. Please wait or set to error before resetting."
+                )
+
+            group = order.shipment_group_id
+            single_shipment = order.shipment_id
+
+            if order.print_job_ids:
+                # Print jobs are not unlinkable by default users, so elevate for cleanup.
+                order.print_job_ids.sudo().unlink()
+
+            order.write(
+                {
+                    "shipment_id": False,
+                    "shipment_group_id": False,
+                    "box_id": False,
+                    "state": "pending",
+                    "error_message": False,
+                    "active": True,
+                }
+            )
+
+            if group:
+                group.unlink()
+
+            if single_shipment and (not group or single_shipment.group_id != group):
+                single_shipment.unlink()
+
     def process_order(self):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
         for order in self:

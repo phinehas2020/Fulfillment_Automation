@@ -28,6 +28,9 @@
             <form string="Shopify Order">
                 <header>
                     <button name="action_process" type="object" string="Process" invisible="state not in ('pending', 'error', 'manual_required')"/>
+                    <button name="action_reset_and_reprocess" type="object" string="Reset &amp; Reprocess" class="btn-secondary"
+                            confirm="This will delete existing shipments/print jobs and repurchase labels. Continue?"
+                            invisible="state not in ('ready_to_ship', 'shipped', 'error', 'manual_required')"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
@@ -154,6 +157,17 @@
         </field>
     </record>
 
+    <record id="action_reset_and_reprocess_orders_server" model="ir.actions.server">
+        <field name="name">Reset &amp; Reprocess</field>
+        <field name="model_id" ref="model_shopify_order"/>
+        <field name="binding_model_id" ref="model_shopify_order"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+            action = records.action_reset_and_reprocess()
+        </field>
+    </record>
+
     <record id="action_import_from_shopify_server" model="ir.actions.server">
         <field name="name">Sync Orders from Shopify</field>
         <field name="model_id" ref="model_shopify_order"/>
@@ -179,5 +193,4 @@
         </field>
     </record>
 </odoo>
-
 
