@@ -18,6 +18,7 @@
 *LandscapeOrientation: Plus90
 *TTRasterizer: Type42
 *cupsFilter: "application/vnd.cups-raw 0 -"
+*cupsFilter: "application/pdf 0 pdftozpl"
 *cupsLanguages: "en"
 
 *% Paper sizes for 4x6 labels

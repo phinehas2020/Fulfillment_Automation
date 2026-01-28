@@ -10,9 +10,19 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Install packages
-echo "[1/8] Installing CUPS and Avahi..."
+echo "[1/8] Installing CUPS, Avahi, and dependencies..."
 apt update
-apt install -y cups cups-bsd cups-client cups-filters avahi-daemon avahi-utils
+apt install -y cups cups-bsd cups-client cups-filters avahi-daemon avahi-utils poppler-utils
+
+# Install Custom Filter
+echo "[1.5/8] Installing pdftozpl filter..."
+SCRIPT_DIR=$(dirname "$0")
+if [ -f "$SCRIPT_DIR/pdftozpl" ]; then
+    cp "$SCRIPT_DIR/pdftozpl" /usr/lib/cups/filter/pdftozpl
+    chmod +x /usr/lib/cups/filter/pdftozpl
+else
+    echo "ERROR: pdftozpl script not found in $SCRIPT_DIR"
+fi
 
 # Configure CUPS for network access
 echo "[2/8] Configuring CUPS for network access..."
@@ -73,24 +83,24 @@ echo "Found printer at: $PRINTER_URI"
 # Add printer to CUPS
 echo "[7/8] Adding printer to CUPS..."
 
-# Use the standard generic ZPL driver which includes raster-to-zpl filters
-# This is crucial for AirPrint/Mac printing to work (converts PDF -> ZPL)
-GENERIC_DRIVER="drv:///sample.drv/zebra.ppd"
+# Add printer to CUPS
+echo "[7/8] Adding printer to CUPS..."
 
-# Check if the generic driver exists
-if lpinfo -m | grep -q "$GENERIC_DRIVER"; then
-    echo "Using generic ZPL driver: $GENERIC_DRIVER"
+# Use Custom PPD with pdftozpl filter
+# This ensures AirPrint (PDF) is converted reliably to ZPL by our script
+# while still allowing raw ZPL pass-through
+if [ -f "/usr/share/cups/model/zebra-zp505.ppd" ]; then
+    echo "Using Custom ZP 505 PPD with pdftozpl filter..."
     lpadmin -p ZebraZP505 \
         -E \
         -v "$PRINTER_URI" \
-        -m "$GENERIC_DRIVER" \
+        -P /usr/share/cups/model/zebra-zp505.ppd \
         -o printer-is-shared=true \
-        -o PageSize=w288h432 \
-        -o MediaSize=w288h432 \
         -D "Zebra ZP 505 Label Printer" \
         -L "Warehouse"
 else
-    echo "Generic driver not found! Falling back to raw (AirPrint may print blank labels)"
+    echo "ERROR: Custom PPD not confirmed installed."
+    # Fallback to raw
     lpadmin -p ZebraZP505 \
         -E \
         -v "$PRINTER_URI" \
