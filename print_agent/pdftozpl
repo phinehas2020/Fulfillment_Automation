@@ -7,6 +7,8 @@ import sys
 import os
 import subprocess
 import shutil
+import tempfile
+import glob
 
 # Constants for Zebra ZP 505
 DPI = 203
@@ -23,18 +25,20 @@ def pdf_to_zpl(pdf_file, job_id, user, title, copies, options):
         sys.stderr.write("ERROR: pdftoppm not found. Install poppler-utils.\n")
         return 1
 
+    temp_dir = tempfile.mkdtemp(prefix="cups_zpl_")
     try:
-        # 1. Convert PDF to PBM (Portable Bitmap - 1 bit monochrome) using pdftoppm
-        # We process page by page
+        # Use a temporary prefix for output
+        out_prefix = os.path.join(temp_dir, "page")
+        
         cmd = [
             "pdftoppm",
             "-mono",
             "-r", str(DPI),
-            pdf_file if pdf_file else "-", # Read from stdin if no file
-            "-" # Output to stdout
+            pdf_file if pdf_file else "-", # Input
+            out_prefix # Output prefix (pdftoppm adds -1.pbm)
         ]
         
-        # If input is stdin (pdf_file is empty string or None)
+        # Input data handling
         input_data = None
         if not pdf_file:
             input_data = sys.stdin.buffer.read()
@@ -47,84 +51,73 @@ def pdf_to_zpl(pdf_file, job_id, user, title, copies, options):
             sys.stderr.write(f"ERROR: pdftoppm failed: {stderr.decode()}\n")
             return 1
             
-        # The output of pdftoppm might be multiple concatenated PBM files if multiple pages
-        # But PBM format is simple headers.
+        # Find generated PBM files
+        search_pattern = out_prefix + "*.pbm"
+        files = glob.glob(search_pattern)
+        files.sort() # Ensure page 1, 2, 3 order
         
-        # Simple PBM parser and ZPL generator
-        process_pbm_stream(stdout)
-        
+        if not files:
+             sys.stderr.write(f"ERROR: No PBM files generated in {temp_dir}\n")
+             return 1
+
+        for pbm_file in files:
+            with open(pbm_file, "rb") as f:
+                data = f.read()
+                process_pbm_data(data)
+                
     except Exception as e:
         sys.stderr.write(f"ERROR: Conversion failed: {e}\n")
         return 1
+    finally:
+        shutil.rmtree(temp_dir)
         
     return 0
 
-def process_pbm_stream(data):
-    """Parse PBM stream and emit ZPL."""
+def process_pbm_data(data):
+    """Parse PBM file data and emit ZPL."""
+    # PBM file format (P4)
+    # Header: P4\nWidth Height\nData
     
-    # This is a naive PBM parser handling concatenated PBMs (one per page)
-    # P4 is binary PBM.
+    if len(data) < 3: return
     
-    offset = 0
-    while offset < len(data):
-        # Find next P4 header
-        if data[offset:offset+2] != b'P4':
-            # Try to find next P4
-            # This handles garbage between PBMs if any
-            new_offset = data.find(b'P4', offset + 1)
-            if new_offset == -1:
-                break
-            offset = new_offset
-            
-        # Parse Header
-        # Format: P4\nwidth height\n[data]
-        end_header = data.find(b'\n', offset + 3) # Skip P4 and first whitespace
-        # P4 can be followed by whitespace, then W, then whitespace, then H, then whitespace (usually newline)
-        
-        # Let's brute force parsing the header lines
-        header_end = offset + 2
-        while not data[header_end:].strip().startswith(b'') and header_end < len(data):
-             # Just look for the binary data start.
-             # PBM binary data starts after the whitespace char following height
-             pass
-        
-        # Safer PBM header parsing
-        # Find the single whitespace char after height
-        # Typically: P4\n# Comment\nWidth Height\n
-        
-        curr = offset + 2
-        while chr(data[curr]).isspace(): curr += 1
-        
-        # Skip comments
-        while chr(data[curr]) == '#':
-            while chr(data[curr]) != '\n': curr += 1
-            curr += 1
-            while chr(data[curr]).isspace(): curr += 1
-            
-        # Read Width
-        w_start = curr
-        while not chr(data[curr]).isspace(): curr += 1
-        width = int(data[w_start:curr])
-        
-        while chr(data[curr]).isspace(): curr += 1
-        
-        # Read Height
-        h_start = curr
-        while not chr(data[curr]).isspace(): curr += 1
-        height = int(data[h_start:curr])
-        
-        while chr(data[curr]).isspace(): curr += 1
-        
-        # curr is now at start of binary data
-        row_width_bytes = (width + 7) // 8
-        total_bytes = row_width_bytes * height
-        
-        image_data = data[curr : curr + total_bytes]
-        
-        # Generate ZPL for this image
-        emit_zpl(width, height, row_width_bytes, image_data)
-        
-        offset = curr + total_bytes
+    # Check for P4 magic number
+    if data[:2] != b'P4':
+        sys.stderr.write("ERROR: Not a P4 PBM file\n")
+        return
+
+    # Parse Header
+    offset = 2
+    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
+    
+    # Skip comments if any
+    while offset < len(data) and chr(data[offset]) == '#':
+        while offset < len(data) and chr(data[offset]) != '\n': offset += 1
+        offset += 1
+        while offset < len(data) and chr(data[offset]).isspace(): offset += 1
+
+    # Width
+    w_start = offset
+    while offset < len(data) and not chr(data[offset]).isspace(): offset += 1
+    if offset >= len(data): return
+    width = int(data[w_start:offset])
+    
+    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
+    
+    # Height
+    h_start = offset
+    while offset < len(data) and not chr(data[offset]).isspace(): offset += 1
+    if offset >= len(data): return
+    height = int(data[h_start:offset])
+    
+    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
+    
+    # Binary data starts here
+    image_data = data[offset:]
+    
+    row_bytes = (width + 7) // 8
+    
+    # Emit
+    emit_zpl(width, height, row_bytes, image_data)
 
 def emit_zpl(width, height, row_bytes, data):
     """Output ZPL for a single image."""
@@ -148,7 +141,6 @@ def emit_zpl(width, height, row_bytes, data):
 if __name__ == "__main__":
     if len(sys.argv) < 6:
         sys.stderr.write("Usage: pdftozpl job-id user title copies options [file]\n")
-        # sys.exit(0) # Don't error out, just exit
         
     job_id = sys.argv[1] if len(sys.argv) > 1 else "1"
     user = sys.argv[2] if len(sys.argv) > 2 else "unknown"
