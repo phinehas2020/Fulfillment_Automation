@@ -72,17 +72,25 @@ echo "Found printer at: $PRINTER_URI"
 
 # Add printer to CUPS
 echo "[7/8] Adding printer to CUPS..."
-# Check if we should use the PPD
-if [ -f "/usr/share/cups/model/zebra-zp505.ppd" ]; then
+
+# Use the standard generic ZPL driver which includes raster-to-zpl filters
+# This is crucial for AirPrint/Mac printing to work (converts PDF -> ZPL)
+GENERIC_DRIVER="drv:///sample.drv/zebra.ppd"
+
+# Check if the generic driver exists
+if lpinfo -m | grep -q "$GENERIC_DRIVER"; then
+    echo "Using generic ZPL driver: $GENERIC_DRIVER"
     lpadmin -p ZebraZP505 \
         -E \
         -v "$PRINTER_URI" \
-        -P /usr/share/cups/model/zebra-zp505.ppd \
+        -m "$GENERIC_DRIVER" \
         -o printer-is-shared=true \
+        -o PageSize=w288h432 \
+        -o MediaSize=w288h432 \
         -D "Zebra ZP 505 Label Printer" \
         -L "Warehouse"
 else
-    # Fallback to raw
+    echo "Generic driver not found! Falling back to raw (AirPrint may print blank labels)"
     lpadmin -p ZebraZP505 \
         -E \
         -v "$PRINTER_URI" \
