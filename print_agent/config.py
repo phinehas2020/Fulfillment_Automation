@@ -10,4 +10,8 @@ PRINTER_ID = os.getenv("PRINTER_ID", "warehouse-1")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 
+CUPS_PRINTER_NAME = os.getenv("CUPS_PRINTER_NAME", "ZebraZP505")
+USE_CUPS = os.getenv("USE_CUPS", "true").lower() == "true"
+
+
 
