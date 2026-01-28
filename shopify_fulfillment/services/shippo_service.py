@@ -1,9 +1,31 @@
 import logging
+import re
 import requests
 import json
 from odoo import exceptions
 
 _logger = logging.getLogger(__name__)
+
+
+def sanitize_phone(phone: str) -> str:
+    """Clean phone number for shipping APIs.
+    
+    Removes extensions (e.g., "ext. 12345", "x123", "extension 456")
+    and ensures only valid phone characters remain.
+    """
+    if not phone:
+        return ""
+    
+    # Remove extension patterns: "ext. 123", "ext 123", "x123", "extension 123", etc.
+    phone = re.sub(r'\s*(ext\.?|extension|x)\s*\d+.*$', '', phone, flags=re.IGNORECASE)
+    
+    # Keep only digits, spaces, dashes, parentheses, and plus sign
+    phone = re.sub(r'[^\d\s\-\(\)\+]', '', phone)
+    
+    # Clean up extra whitespace
+    phone = ' '.join(phone.split())
+    
+    return phone.strip()
 
 class ShippoService:
     API_URL = "https://api.goshippo.com"
@@ -41,7 +63,7 @@ class ShippoService:
             "state": order.shipping_state or "",
             "zip": order.shipping_zip or "",
             "country": order.shipping_country or "US",
-            "phone": order.shipping_phone or "",
+            "phone": sanitize_phone(order.shipping_phone),
             "email": order.email or "no-reply@example.com",
         }
 
@@ -139,7 +161,7 @@ class ShippoService:
             "state": order.shipping_state or "",
             "zip": order.shipping_zip or "",
             "country": order.shipping_country or "US",
-            "phone": order.shipping_phone or "",
+            "phone": sanitize_phone(order.shipping_phone),
             "email": order.email or "no-reply@example.com",
         }
 
@@ -248,12 +270,23 @@ class ShippoService:
             if status != "SUCCESS":
                 messages = data.get("messages", [])
                 error_msg = "Unknown error"
+                error_codes = []
+                carrier_source = None
                 if messages and isinstance(messages, list):
-                    # Shippo messages often look like [{'text': '...', ...}]
+                    # Shippo messages often look like [{'text': '...', 'code': '...', 'source': '...'}]
                     error_msg = "; ".join([m.get("text", str(m)) for m in messages])
+                    error_codes = [m.get("code", "") for m in messages if m.get("code")]
+                    # Get the carrier that failed
+                    sources = [m.get("source", "") for m in messages if m.get("source")]
+                    if sources:
+                        carrier_source = sources[0]
                 
                 _logger.error("Shippo Transaction status: %s Messages: %s", status, messages)
-                return {"error": error_msg}
+                return {
+                    "error": error_msg, 
+                    "error_codes": error_codes,
+                    "failed_carrier": carrier_source,
+                }
             
             zpl_data = None
             

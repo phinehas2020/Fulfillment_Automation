@@ -19,7 +19,7 @@ This plan covers three enhancements to the Shopify Fulfillment automation system
 - `/shopify_fulfillment/models/shopify_order.py`
 
 ### Changes Required
-After fetching rates from Shippo (line 441), add a filter to exclude "UPS Ground Saver":
+After fetchingç rates from Shippo (line 441), add a filter to exclude "UPS Ground Saver":
 
 ```python
 # After: rates = shippo.get_rates(self, box, self.env.company)

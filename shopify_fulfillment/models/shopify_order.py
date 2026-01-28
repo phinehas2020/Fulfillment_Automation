@@ -988,6 +988,49 @@ class ShopifyOrder(models.Model):
             # Select rate (cheapest or requested method)
             selected_rate = self._select_shipping_rate(rates)
             shipment_vals = shippo.purchase_label(selected_rate)
+            
+            # Carrier fallback: If USPS fails with address validation, try UPS
+            if shipment_vals and shipment_vals.get("error"):
+                error_codes = shipment_vals.get("error_codes", [])
+                failed_carrier = shipment_vals.get("failed_carrier", "")
+                
+                # Check if this is an address validation error from USPS
+                is_address_error = "failed_address_validation" in error_codes
+                is_usps = failed_carrier.upper() == "USPS" or "USPS" in selected_rate.get("provider", "")
+                
+                if is_address_error and is_usps:
+                    _logger.warning(
+                        "Order %s Box %d: USPS address validation failed, attempting UPS fallback",
+                        self.id, sequence
+                    )
+                    
+                    # Find a UPS rate as fallback
+                    ups_rates = [
+                        r for r in rates 
+                        if r.get("provider", "").upper() == "UPS"
+                    ]
+                    
+                    if ups_rates:
+                        # Select cheapest UPS rate
+                        ups_rate = sorted(ups_rates, key=lambda r: float(r.get("amount", 999999)))[0]
+                        _logger.info(
+                            "Order %s Box %d: Trying UPS %s at $%s",
+                            self.id, sequence,
+                            ups_rate.get("servicelevel", {}).get("name"),
+                            ups_rate.get("amount")
+                        )
+                        shipment_vals = shippo.purchase_label(ups_rate)
+                        
+                        if shipment_vals and not shipment_vals.get("error"):
+                            _logger.info(
+                                "Order %s Box %d: UPS fallback successful!",
+                                self.id, sequence
+                            )
+                    else:
+                        _logger.warning(
+                            "Order %s Box %d: No UPS rates available for fallback",
+                            self.id, sequence
+                        )
         else:
             # Fallback to Mock API (for testing)
             api_client = self._get_shopify_api()
