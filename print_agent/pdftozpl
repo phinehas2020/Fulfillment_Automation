@@ -30,21 +30,40 @@ def pdf_to_zpl(pdf_file, job_id, user, title, copies, options):
         # Use a temporary prefix for output
         out_prefix = os.path.join(temp_dir, "page")
         
+        # Determine input file
+        input_file = "-" # Default to stdin
+        if filename and filename != "-":
+            input_file = filename
+            
         cmd = [
             "pdftoppm",
             "-mono",
             "-r", str(DPI),
-            pdf_file if pdf_file else "-", # Input
-            out_prefix # Output prefix (pdftoppm adds -1.pbm)
+            input_file,
+            out_prefix
         ]
         
         # Input data handling
+        # If input_file is "-", we MUST pipe data to stdin of subprocess
+        # If input_file is a path, we MUST NOT pipe data
+        
+        stdin_stream = None
         input_data = None
-        if not pdf_file:
+        
+        if input_file == "-":
+            # Read from our stdin and buffer it to pass to subprocess
+            # OR pass our stdin directly? Passing directly is safer for memory but subprocess needs file object
+            # Let's read it to be safe against seeking issues if any
+            stdin_stream = subprocess.PIPE
             input_data = sys.stdin.buffer.read()
             
+            # If we read 0 bytes from stdin, and filename wasn't provided, that's the "Stream empty" error
+            if len(input_data) == 0:
+                 sys.stderr.write("ERROR: No input data received on stdin\n")
+                 return 1
+        
         # Run conversion
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE if not pdf_file else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(cmd, stdin=stdin_stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = p.communicate(input=input_data)
         
         if p.returncode != 0:
