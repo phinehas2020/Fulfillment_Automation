@@ -32,8 +32,8 @@ def pdf_to_zpl(pdf_file, job_id, user, title, copies, options):
         
         # Determine input file
         input_file = "-" # Default to stdin
-        if filename and filename != "-":
-            input_file = filename
+        if pdf_file and pdf_file != "-":
+            input_file = pdf_file
             
         cmd = [
             "pdftoppm",
