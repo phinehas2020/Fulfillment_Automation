@@ -98,6 +98,10 @@ class Printer:
         env.setdefault("ZPL_WIDTH_INCH", "4")
         env.setdefault("ZPL_HEIGHT_INCH", "6")
         env.setdefault("ZPL_DPI", "203")
+        env.setdefault("ZPL_AUTO_CROP_CONTENT", "1")
+        env.setdefault("ZPL_ROTATE_TO_FIT", "1")
+        env.setdefault("ZPL_CONTENT_ZOOM", "1.25")
+        env.setdefault("ZPL_CONTENT_PAD_PX", "6")
 
         process = subprocess.run(
             [script_path, "1", "agent", "label", "1", "", pdf_path],

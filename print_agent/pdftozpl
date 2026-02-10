@@ -25,6 +25,10 @@ INVERT_BITS = os.environ.get("ZPL_INVERT_BITS", "0").lower() in ("1", "true", "y
 REVERSE_BITS = os.environ.get("ZPL_REVERSE_BITS", "0").lower() in ("1", "true", "yes")
 AUTO_INVERT = os.environ.get("ZPL_AUTO_INVERT", "0").lower() in ("1", "true", "yes")
 DEBUG = os.environ.get("ZPL_DEBUG", "0").lower() in ("1", "true", "yes")
+AUTO_CROP_CONTENT = os.environ.get("ZPL_AUTO_CROP_CONTENT", "1").lower() in ("1", "true", "yes")
+ROTATE_TO_FIT = os.environ.get("ZPL_ROTATE_TO_FIT", "1").lower() in ("1", "true", "yes")
+CONTENT_PAD_PX = int(os.environ.get("ZPL_CONTENT_PAD_PX", "8"))
+CONTENT_ZOOM = float(os.environ.get("ZPL_CONTENT_ZOOM", "1.15"))
 
 BIT_COUNTS = [bin(i).count("1") for i in range(256)]
 REVERSE_TABLE = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
@@ -184,6 +188,149 @@ def maybe_transform_image(image_data, row_bytes, height):
 
     return image_data
 
+def get_bit(image_data, row_bytes, x, y):
+    byte_index = y * row_bytes + (x // 8)
+    bit_mask = 0x80 >> (x % 8)
+    return bool(image_data[byte_index] & bit_mask)
+
+def set_bit(image_data, row_bytes, x, y):
+    byte_index = y * row_bytes + (x // 8)
+    bit_mask = 0x80 >> (x % 8)
+    image_data[byte_index] |= bit_mask
+
+def find_content_bounds(image_data, width, height):
+    row_bytes = (width + 7) // 8
+    min_x, min_y = width, height
+    max_x, max_y = -1, -1
+
+    for y in range(height):
+        row = image_data[y * row_bytes:(y + 1) * row_bytes]
+        if not any(row):
+            continue
+
+        min_y = min(min_y, y)
+        max_y = max(max_y, y)
+
+        for byte_offset, byte_val in enumerate(row):
+            if byte_val == 0:
+                continue
+            x_base = byte_offset * 8
+            for bit in range(8):
+                x = x_base + bit
+                if x >= width:
+                    break
+                if byte_val & (0x80 >> bit):
+                    min_x = min(min_x, x)
+                    max_x = max(max_x, x)
+
+    if max_x < 0 or max_y < 0:
+        return 0, 0, width - 1, height - 1
+
+    pad = max(0, CONTENT_PAD_PX)
+    return (
+        max(0, min_x - pad),
+        max(0, min_y - pad),
+        min(width - 1, max_x + pad),
+        min(height - 1, max_y + pad),
+    )
+
+def crop_bitmap(image_data, width, height, bounds):
+    x1, y1, x2, y2 = bounds
+    crop_w = x2 - x1 + 1
+    crop_h = y2 - y1 + 1
+    src_row_bytes = (width + 7) // 8
+    dst_row_bytes = (crop_w + 7) // 8
+    dst = bytearray(dst_row_bytes * crop_h)
+
+    for y in range(crop_h):
+        src_y = y1 + y
+        for x in range(crop_w):
+            src_x = x1 + x
+            if get_bit(image_data, src_row_bytes, src_x, src_y):
+                set_bit(dst, dst_row_bytes, x, y)
+
+    return bytes(dst), crop_w, crop_h
+
+def rotate_bitmap_cw(image_data, width, height):
+    src_row_bytes = (width + 7) // 8
+    out_w, out_h = height, width
+    out_row_bytes = (out_w + 7) // 8
+    out = bytearray(out_row_bytes * out_h)
+
+    for y in range(height):
+        for x in range(width):
+            if get_bit(image_data, src_row_bytes, x, y):
+                out_x = height - 1 - y
+                out_y = x
+                set_bit(out, out_row_bytes, out_x, out_y)
+
+    return bytes(out), out_w, out_h
+
+def fit_bitmap_top_center(image_data, width, height, target_w, target_h, zoom):
+    src_row_bytes = (width + 7) // 8
+    dst_row_bytes = (target_w + 7) // 8
+    dst = bytearray(dst_row_bytes * target_h)
+
+    if width <= 0 or height <= 0:
+        return bytes(dst), target_w, target_h
+
+    scale = min(target_w / width, target_h / height)
+    scale *= zoom if zoom and zoom > 0 else 1.0
+
+    scaled_w = max(1, int(round(width * scale)))
+    scaled_h = max(1, int(round(height * scale)))
+
+    offset_x = (target_w - scaled_w) // 2
+    offset_y = 0  # top-anchored by design
+
+    x_start = max(0, offset_x)
+    x_end = min(target_w, offset_x + scaled_w)
+    y_start = max(0, offset_y)
+    y_end = min(target_h, offset_y + scaled_h)
+
+    if x_start >= x_end or y_start >= y_end:
+        return bytes(dst), target_w, target_h
+
+    for y in range(y_start, y_end):
+        src_y = int((y - offset_y) / scale)
+        if src_y < 0 or src_y >= height:
+            continue
+        for x in range(x_start, x_end):
+            src_x = int((x - offset_x) / scale)
+            if src_x < 0 or src_x >= width:
+                continue
+            if get_bit(image_data, src_row_bytes, src_x, src_y):
+                set_bit(dst, dst_row_bytes, x, y)
+
+    return bytes(dst), target_w, target_h
+
+def normalize_label_bitmap(image_data, width, height):
+    row_bytes = (width + 7) // 8
+    image_data = normalize_image_data(image_data, row_bytes, height)
+
+    if AUTO_CROP_CONTENT:
+        bounds = find_content_bounds(image_data, width, height)
+        image_data, width, height = crop_bitmap(image_data, width, height, bounds)
+        log(f"Cropped to content: {width}x{height}")
+
+    if ROTATE_TO_FIT:
+        src_landscape = width > height
+        target_landscape = WIDTH_PX > HEIGHT_PX
+        if src_landscape != target_landscape:
+            image_data, width, height = rotate_bitmap_cw(image_data, width, height)
+            log(f"Rotated bitmap to: {width}x{height}")
+
+    image_data, width, height = fit_bitmap_top_center(
+        image_data,
+        width,
+        height,
+        WIDTH_PX,
+        HEIGHT_PX,
+        CONTENT_ZOOM,
+    )
+    log(f"Fitted bitmap to label canvas: {width}x{height}")
+    return image_data, width, height
+
 def process_pbm_data(data):
     """Parse PBM file data and emit ZPL."""
     # PBM file format (P4)
@@ -226,6 +373,7 @@ def process_pbm_data(data):
         offset += 1
 
     image_data = data[offset:]
+    image_data, width, height = normalize_label_bitmap(image_data, width, height)
     row_bytes = (width + 7) // 8
     image_data = maybe_transform_image(image_data, row_bytes, height)
 
