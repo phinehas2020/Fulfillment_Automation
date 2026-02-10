@@ -103,12 +103,22 @@ class ShippoRecentTransaction(models.TransientModel):
         if shipment and shipment.label_zpl:
             zpl_data = shipment.label_zpl
         elif self.label_url:
+            if self.label_file_type and "ZPL" not in (self.label_file_type or "").upper():
+                raise exceptions.UserError(
+                    "This Shippo label is not ZPL (likely PDF). It cannot be sent through the raw ZPL print queue."
+                )
+
             shippo = ShippoService.from_env(self.env)
             if not shippo:
                 raise exceptions.UserError(
                     "No local ZPL found and Shippo API key is not configured to download label content."
                 )
             zpl_data = shippo._download_url(self.label_url)
+
+            if zpl_data and not self._looks_like_zpl(zpl_data):
+                raise exceptions.UserError(
+                    "Downloaded label content is not ZPL (likely PDF). Reprint is blocked to prevent blank prints."
+                )
 
         if not zpl_data:
             raise exceptions.UserError("Unable to retrieve label data for reprint.")
@@ -172,3 +182,14 @@ class ShippoRecentTransaction(models.TransientModel):
         except Exception:
             _logger.warning("Could not parse Shippo transaction date: %s", value)
             return False
+
+    @api.model
+    def _looks_like_zpl(self, content):
+        if not content:
+            return False
+
+        sample = (content or "").lstrip()[:32]
+        if sample.startswith("%PDF-"):
+            return False
+
+        return "^XA" in sample or "^XZ" in content[:2048]
