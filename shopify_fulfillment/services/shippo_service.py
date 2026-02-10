@@ -236,6 +236,33 @@ class ShippoService:
             _logger.exception("Failed to connect to Shippo: %s", e)
             return []
 
+    def get_recent_transactions(self, limit: int = 20):
+        """Fetch recent label transactions from Shippo."""
+        url = f"{self.API_URL}/transactions"
+        params = {"results": limit}
+
+        _logger.info("Shippo: Fetching recent transactions (limit=%s)", limit)
+
+        try:
+            resp = requests.get(url, headers=self._headers(), params=params, timeout=15)
+            _logger.info("Shippo recent transactions status: %s", resp.status_code)
+
+            if resp.status_code >= 400:
+                _logger.error("Shippo recent transactions error: %s", resp.text)
+                return []
+
+            data = resp.json()
+            results = data.get("results", [])
+            if not isinstance(results, list):
+                _logger.warning("Shippo transactions payload missing list in 'results'")
+                return []
+
+            _logger.info("Shippo: Received %d recent transactions", len(results))
+            return results
+        except Exception as e:
+            _logger.exception("Failed to fetch recent Shippo transactions: %s", e)
+            return []
+
     def purchase_label(self, rate_obj):
         """
         Purchase the label for the given rate object (from get_rates).

@@ -5,6 +5,7 @@
     <menuitem id="menu_shopify_order_sync" name="Sync Now" parent="menu_shopify_root" action="action_import_from_shopify_server" sequence="15"/>
     <menuitem id="menu_shopify_boxes" name="Boxes" parent="menu_shopify_root" action="action_fulfillment_box" sequence="20"/>
     <menuitem id="menu_shopify_print_jobs" name="Print Jobs" parent="menu_shopify_root" action="action_print_job" sequence="30"/>
+    <menuitem id="menu_shopify_recent_shipments" name="Recent Shipments" parent="menu_shopify_root" action="action_fetch_recent_shipments" sequence="35"/>
     
     <!-- Configuration action defined here to avoid reference issues -->
     <record id="action_shopify_settings" model="ir.actions.act_window">

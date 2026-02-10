@@ -7,3 +7,4 @@ access_fulfillment_shipment_group_user,access.fulfillment.shipment.group,model_f
 access_print_job_user,access.print.job,model_print_job,base.group_user,1,1,1,0
 access_print_test_wizard_user,access.print.test.wizard,model_print_test_wizard,base.group_user,1,1,1,1
 access_shopify_config_wizard_user,access.shopify.config.wizard,model_shopify_config_wizard,base.group_user,1,1,1,1
+access_shippo_recent_transaction_user,access.shippo.recent.transaction,model_shippo_recent_transaction,base.group_user,1,1,1,1

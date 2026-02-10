@@ -19,6 +19,7 @@
         "views/print_test_wizard_views.xml",
         "views/shopify_config_wizard_views.xml",
         "views/project_task_views.xml",
+        "views/recent_shipment_views.xml",
         "views/menu.xml",
     ],
     "description": """
