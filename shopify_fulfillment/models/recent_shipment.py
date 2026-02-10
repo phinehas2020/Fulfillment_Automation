@@ -103,8 +103,13 @@ class ShippoRecentTransaction(models.TransientModel):
         order = shipment.order_id if shipment else self.order_id
 
         if shipment and shipment.label_zpl:
-            zpl_data = shipment.label_zpl
-        elif self.label_url:
+            if self._looks_like_zpl(shipment.label_zpl):
+                zpl_data = shipment.label_zpl
+            elif self._looks_like_pdf(shipment.label_zpl):
+                pdf_data = shipment.label_zpl
+                job_type = "label_pdf"
+
+        if not zpl_data and not pdf_data and self.label_url:
             shippo = ShippoService.from_env(self.env)
             if not shippo:
                 raise exceptions.UserError(
