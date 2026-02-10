@@ -97,38 +97,43 @@ class ShippoRecentTransaction(models.TransientModel):
         self.ensure_one()
 
         zpl_data = False
+        pdf_data = False
+        job_type = "label"
         shipment = self.local_shipment_id.sudo() if self.local_shipment_id else self.env["fulfillment.shipment"]
         order = shipment.order_id if shipment else self.order_id
 
         if shipment and shipment.label_zpl:
             zpl_data = shipment.label_zpl
         elif self.label_url:
-            if self.label_file_type and "ZPL" not in (self.label_file_type or "").upper():
-                raise exceptions.UserError(
-                    "This Shippo label is not ZPL (likely PDF). It cannot be sent through the raw ZPL print queue."
-                )
-
             shippo = ShippoService.from_env(self.env)
             if not shippo:
                 raise exceptions.UserError(
                     "No local ZPL found and Shippo API key is not configured to download label content."
                 )
-            zpl_data = shippo._download_url(self.label_url)
+            downloaded_data = shippo._download_url(self.label_url)
 
-            if zpl_data and not self._looks_like_zpl(zpl_data):
+            if not downloaded_data:
+                raise exceptions.UserError("Unable to retrieve label data for reprint.")
+
+            if self._looks_like_zpl(downloaded_data):
+                zpl_data = downloaded_data
+            elif self._looks_like_pdf(downloaded_data):
+                pdf_data = downloaded_data
+                job_type = "label_pdf"
+            else:
                 raise exceptions.UserError(
-                    "Downloaded label content is not ZPL (likely PDF). Reprint is blocked to prevent blank prints."
+                    "Downloaded label content is not a supported format for reprint (expected ZPL or PDF)."
                 )
 
-        if not zpl_data:
+        if not zpl_data and not pdf_data:
             raise exceptions.UserError("Unable to retrieve label data for reprint.")
 
         self.env["print.job"].create(
             {
                 "order_id": order.id if order else False,
                 "shipment_id": shipment.id if shipment else False,
-                "job_type": "label",
-                "zpl_data": zpl_data,
+                "job_type": job_type,
+                "zpl_data": zpl_data or pdf_data,
                 "state": "pending",
                 "printer_id": False,
             }
@@ -193,3 +198,9 @@ class ShippoRecentTransaction(models.TransientModel):
             return False
 
         return "^XA" in sample or "^XZ" in content[:2048]
+
+    @api.model
+    def _looks_like_pdf(self, content):
+        if not content:
+            return False
+        return (content or "").lstrip().startswith("%PDF-")

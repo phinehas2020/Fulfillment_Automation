@@ -23,7 +23,12 @@ def main():
             for job in jobs:
                 print(f"Processing job {job.get('id')}...")
                 try:
-                    printer.send_zpl(job.get("zpl_data", ""))
+                    payload = job.get("zpl_data", "")
+                    job_type = job.get("job_type", "label")
+                    if job_type == "label_pdf":
+                        printer.send_pdf(payload)
+                    else:
+                        printer.send_zpl(payload)
                     client.mark_complete(job_id=job.get("id"), success=True)
                     print(f"Job {job.get('id')} completed successfully.")
                 except Exception as exc:  # pylint: disable=broad-except
@@ -37,5 +42,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

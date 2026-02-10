@@ -1,5 +1,8 @@
 """Lightweight printer wrapper (skeleton)."""
 
+import subprocess
+import tempfile
+
 from config import PRINTER_PATH, USE_CUPS, CUPS_PRINTER_NAME
 
 
@@ -13,8 +16,6 @@ class Printer:
 
     def send_zpl(self, zpl_data: str):
         if USE_CUPS:
-            # CUPS Printing Logic
-            import subprocess
             try:
                 # Use lpr to submit to CUPS queue
                 process = subprocess.run(
@@ -51,4 +52,39 @@ class Printer:
                     
                 raise PrinterError(error_msg) from exc
 
+    def send_pdf(self, pdf_data: str):
+        if not USE_CUPS:
+            raise PrinterError("PDF printing requires USE_CUPS=true")
+
+        file_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".pdf", delete=False) as temp_file:
+                payload = pdf_data
+                if isinstance(payload, str):
+                    payload = payload.encode("latin1", errors="ignore")
+                temp_file.write(payload)
+                file_path = temp_file.name
+
+            process = subprocess.run(
+                ["lp", "-d", CUPS_PRINTER_NAME, file_path],
+                capture_output=True,
+                timeout=30,
+            )
+            if process.returncode != 0:
+                raise PrinterError(f"lp failed: {process.stderr.decode()}")
+            return True
+        except FileNotFoundError:
+            raise PrinterError("lp command not found. Is CUPS installed?")
+        except subprocess.TimeoutExpired:
+            raise PrinterError("PDF print job timed out")
+        except Exception as exc:
+            raise PrinterError(f"PDF print failed: {exc}")
+        finally:
+            if file_path:
+                try:
+                    import os
+
+                    os.unlink(file_path)
+                except OSError:
+                    pass
 
