@@ -89,14 +89,28 @@ class Printer:
         if not os.path.exists(script_path):
             raise PrinterError(f"pdftozpl script not found at {script_path}")
 
+        env = os.environ.copy()
+        # Letter-sized PDFs from carriers often contain large whitespace margins.
+        # Force fit to 4x6 and enable auto invert for thermal visibility.
+        env.setdefault("ZPL_FORCE_FIT", "1")
+        env.setdefault("ZPL_AUTO_INVERT", "1")
+        env.setdefault("ZPL_SCALE_TO_LABEL", "1")
+        env.setdefault("ZPL_WIDTH_INCH", "4")
+        env.setdefault("ZPL_HEIGHT_INCH", "6")
+        env.setdefault("ZPL_DPI", "203")
+
         process = subprocess.run(
             [script_path, "1", "agent", "label", "1", "", pdf_path],
             capture_output=True,
             timeout=60,
+            env=env,
         )
+        stderr = process.stderr.decode("utf-8", errors="ignore")
         if process.returncode != 0:
-            stderr = process.stderr.decode("utf-8", errors="ignore")
             raise PrinterError(f"pdftozpl failed: {stderr}")
+
+        if stderr.strip():
+            print(f"pdftozpl: {stderr.strip()}")
 
         output_bytes = process.stdout or b""
         if not output_bytes:
