@@ -100,7 +100,7 @@ class Printer:
         env.setdefault("ZPL_DPI", "203")
         env.setdefault("ZPL_AUTO_CROP_CONTENT", "1")
         env.setdefault("ZPL_ROTATE_TO_FIT", "1")
-        env.setdefault("ZPL_CONTENT_ZOOM", "1.25")
+        env.setdefault("ZPL_CONTENT_ZOOM", "1")
         env.setdefault("ZPL_CONTENT_PAD_PX", "6")
 
         process = subprocess.run(
