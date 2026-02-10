@@ -198,11 +198,17 @@ class ShippoRecentTransaction(models.TransientModel):
         if not content:
             return False
 
-        sample = (content or "").lstrip()[:32]
-        if sample.startswith("%PDF-"):
+        normalized = (content or "").lstrip()
+        header = normalized[:32]
+
+        if header.startswith("%PDF-"):
             return False
 
-        return "^XA" in sample or "^XZ" in content[:2048]
+        # Require real ZPL framing markers in sequence.
+        if not normalized.startswith("^XA"):
+            return False
+
+        return "^XZ" in normalized[:4096]
 
     @api.model
     def _looks_like_pdf(self, content):
