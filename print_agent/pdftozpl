@@ -29,6 +29,7 @@ AUTO_CROP_CONTENT = os.environ.get("ZPL_AUTO_CROP_CONTENT", "1").lower() in ("1"
 ROTATE_TO_FIT = os.environ.get("ZPL_ROTATE_TO_FIT", "1").lower() in ("1", "true", "yes")
 CONTENT_PAD_PX = int(os.environ.get("ZPL_CONTENT_PAD_PX", "8"))
 CONTENT_ZOOM = float(os.environ.get("ZPL_CONTENT_ZOOM", "1.15"))
+ALLOW_UPSCALE = os.environ.get("ZPL_ALLOW_UPSCALE", "0").lower() in ("1", "true", "yes")
 
 BIT_COUNTS = [bin(i).count("1") for i in range(256)]
 REVERSE_TABLE = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
@@ -274,7 +275,10 @@ def fit_bitmap_top_center(image_data, width, height, target_w, target_h, zoom):
     if width <= 0 or height <= 0:
         return bytes(dst), target_w, target_h
 
-    scale = min(target_w / width, target_h / height)
+    fit_scale = min(target_w / width, target_h / height)
+    if not ALLOW_UPSCALE:
+        fit_scale = min(1.0, fit_scale)
+    scale = fit_scale
     scale *= zoom if zoom and zoom > 0 else 1.0
 
     scaled_w = max(1, int(round(width * scale)))
