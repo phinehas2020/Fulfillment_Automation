@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CUPS Filter: Convert PDF to ZPL for Zebra ZP 505 (203 DPI).
+CUPS Filter: Convert PDF/PS to ZPL for Zebra ZP 505 (203 DPI).
 """
 
 import sys
@@ -10,162 +10,300 @@ import shutil
 import tempfile
 import glob
 
-# Constants for Zebra ZP 505
-DPI = 203
-WIDTH_INCH = 4
-HEIGHT_INCH = 6
-WIDTH_PX = int(WIDTH_INCH * DPI)
-HEIGHT_PX = int(HEIGHT_INCH * DPI)
+# Constants for Zebra ZP 505 (override with env vars if needed)
+DPI = int(os.environ.get("ZPL_DPI", "203"))
+WIDTH_INCH = float(os.environ.get("ZPL_WIDTH_INCH", "4"))
+HEIGHT_INCH = float(os.environ.get("ZPL_HEIGHT_INCH", "6"))
+WIDTH_PX = int(round(WIDTH_INCH * DPI))
+HEIGHT_PX = int(round(HEIGHT_INCH * DPI))
 
-def pdf_to_zpl(pdf_file, job_id, user, title, copies, options):
-    """Convert PDF to ZPL."""
-    
-    # Check for pdftoppm
-    if not shutil.which("pdftoppm"):
-        sys.stderr.write("ERROR: pdftoppm not found. Install poppler-utils.\n")
-        return 1
+SCALE_TO_LABEL = os.environ.get("ZPL_SCALE_TO_LABEL", "1").lower() in ("1", "true", "yes")
+FIT_TO_LABEL = os.environ.get("ZPL_FIT_TO_LABEL", "1").lower() in ("1", "true", "yes")
+FORCE_FIT = os.environ.get("ZPL_FORCE_FIT", "0").lower() in ("1", "true", "yes")
+FORCE_CROP = os.environ.get("ZPL_FORCE_CROP", "0").lower() in ("1", "true", "yes")
+INVERT_BITS = os.environ.get("ZPL_INVERT_BITS", "0").lower() in ("1", "true", "yes")
+REVERSE_BITS = os.environ.get("ZPL_REVERSE_BITS", "0").lower() in ("1", "true", "yes")
+AUTO_INVERT = os.environ.get("ZPL_AUTO_INVERT", "0").lower() in ("1", "true", "yes")
+DEBUG = os.environ.get("ZPL_DEBUG", "0").lower() in ("1", "true", "yes")
 
-    temp_dir = tempfile.mkdtemp(prefix="cups_zpl_")
-    try:
-        # Use a temporary prefix for output
-        out_prefix = os.path.join(temp_dir, "page")
-        
-        # Determine input file
-        input_file = "-" # Default to stdin
-        if pdf_file and pdf_file != "-":
-            input_file = pdf_file
-            
+BIT_COUNTS = [bin(i).count("1") for i in range(256)]
+REVERSE_TABLE = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
+
+def log(message):
+    if DEBUG:
+        sys.stderr.write(message + "\n")
+
+def require_tool(name, hint):
+    if shutil.which(name):
+        return True
+    sys.stderr.write(f"ERROR: {name} not found. {hint}\n")
+    return False
+
+def run_command(cmd, input_data=None):
+    stdin_stream = subprocess.PIPE if input_data is not None else None
+    p = subprocess.Popen(cmd, stdin=stdin_stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = p.communicate(input=input_data)
+    if p.returncode != 0:
+        sys.stderr.write(f"ERROR: Command failed: {' '.join(cmd)}\n")
+        if stderr:
+            sys.stderr.write(stderr.decode(errors="ignore") + "\n")
+        return False
+    if DEBUG and stderr:
+        log(stderr.decode(errors="ignore").strip())
+    return True
+
+def sniff_file_type(path):
+    with open(path, "rb") as f:
+        header = f.read(5)
+    if header.startswith(b"%PDF-"):
+        return "pdf"
+    if header.startswith(b"%!PS"):
+        return "ps"
+    return "unknown"
+
+def ps_to_pdf(ps_path, pdf_path):
+    if shutil.which("gs"):
         cmd = [
-            "pdftoppm",
-            "-mono",
-            "-r", str(DPI),
-            input_file,
-            out_prefix
+            "gs",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-sDEVICE=pdfwrite",
+            f"-sOutputFile={pdf_path}",
+            ps_path,
         ]
-        
-        # Input data handling
-        # If input_file is "-", we MUST pipe data to stdin of subprocess
-        # If input_file is a path, we MUST NOT pipe data
-        
-        stdin_stream = None
-        input_data = None
-        
-        if input_file == "-":
-            # Read from our stdin and buffer it to pass to subprocess
-            # OR pass our stdin directly? Passing directly is safer for memory but subprocess needs file object
-            # Let's read it to be safe against seeking issues if any
-            stdin_stream = subprocess.PIPE
-            input_data = sys.stdin.buffer.read()
-            
-            # If we read 0 bytes from stdin, and filename wasn't provided, that's the "Stream empty" error
-            if len(input_data) == 0:
-                 sys.stderr.write("ERROR: No input data received on stdin\n")
-                 return 1
-        
-        # Run conversion
-        p = subprocess.Popen(cmd, stdin=stdin_stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = p.communicate(input=input_data)
-        
-        if p.returncode != 0:
-            sys.stderr.write(f"ERROR: pdftoppm failed: {stderr.decode()}\n")
-            return 1
-            
-        # Find generated PBM files
-        search_pattern = out_prefix + "*.pbm"
-        files = glob.glob(search_pattern)
-        files.sort() # Ensure page 1, 2, 3 order
-        
-        if not files:
-             sys.stderr.write(f"ERROR: No PBM files generated in {temp_dir}\n")
-             return 1
+        return run_command(cmd)
+    if shutil.which("ps2pdf"):
+        cmd = ["ps2pdf", ps_path, pdf_path]
+        return run_command(cmd)
+    sys.stderr.write("ERROR: ps2pdf or gs not found. Install ghostscript.\n")
+    return False
 
-        for pbm_file in files:
-            with open(pbm_file, "rb") as f:
-                data = f.read()
-                process_pbm_data(data)
-                
-    except Exception as e:
-        sys.stderr.write(f"ERROR: Conversion failed: {e}\n")
-        return 1
-    finally:
-        shutil.rmtree(temp_dir)
-        
-    return 0
+def pdf_page_size_points(pdf_path):
+    if not shutil.which("pdfinfo"):
+        log("pdfinfo not found; cannot detect page size")
+        return None
+    p = subprocess.Popen(["pdfinfo", pdf_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, _ = p.communicate()
+    if p.returncode != 0:
+        return None
+    for line in stdout.decode(errors="ignore").splitlines():
+        if line.startswith("Page size:"):
+            parts = line.split()
+            try:
+                width = float(parts[2])
+                height = float(parts[4])
+                return width, height
+            except (IndexError, ValueError):
+                return None
+    return None
+
+def prepare_pdf_for_label(pdf_in, pdf_out):
+    if not shutil.which("gs"):
+        log("gs not found; skipping FIT_TO_LABEL")
+        return False
+
+    size = pdf_page_size_points(pdf_in)
+    if not size:
+        log("Unable to detect page size; skipping FIT_TO_LABEL")
+        return False
+
+    src_w, src_h = size
+    label_w = float(WIDTH_INCH * 72)
+    label_h = float(HEIGHT_INCH * 72)
+
+    if FORCE_FIT:
+        mode = "fit"
+    elif FORCE_CROP:
+        mode = "crop"
+    else:
+        if src_w > label_w or src_h > label_h:
+            mode = "crop"
+        elif src_w < label_w or src_h < label_h:
+            mode = "fit"
+        else:
+            return False
+
+    cmd = [
+        "gs",
+        "-sDEVICE=pdfwrite",
+        "-dNOPAUSE",
+        "-dBATCH",
+        "-dSAFER",
+        "-dFIXEDMEDIA",
+        "-dAutoRotatePages=/None",
+        f"-dDEVICEWIDTHPOINTS={int(round(label_w))}",
+        f"-dDEVICEHEIGHTPOINTS={int(round(label_h))}",
+    ]
+    if mode == "fit":
+        cmd.append("-dPDFFitPage")
+    cmd += [f"-sOutputFile={pdf_out}", pdf_in]
+    return run_command(cmd)
+
+def render_pdf_to_pbm(pdf_path, temp_dir):
+    out_prefix = os.path.join(temp_dir, "page")
+    cmd = [
+        "pdftoppm",
+        "-mono",
+        "-r", str(DPI),
+    ]
+    if SCALE_TO_LABEL:
+        cmd += ["-scale-to-x", str(WIDTH_PX), "-scale-to-y", str(HEIGHT_PX)]
+    cmd += [pdf_path, out_prefix]
+    if not run_command(cmd):
+        return []
+    files = glob.glob(out_prefix + "*.pbm")
+    files.sort()
+    return files
+
+def normalize_image_data(image_data, row_bytes, height):
+    expected_len = row_bytes * height
+    if len(image_data) < expected_len:
+        log(f"PBM data short: {len(image_data)} < {expected_len}, padding with zeros")
+        image_data = image_data + (b"\x00" * (expected_len - len(image_data)))
+    elif len(image_data) > expected_len:
+        log(f"PBM data long: {len(image_data)} > {expected_len}, truncating")
+        image_data = image_data[:expected_len]
+    return image_data
+
+def maybe_transform_image(image_data, row_bytes, height):
+    image_data = normalize_image_data(image_data, row_bytes, height)
+
+    if REVERSE_BITS:
+        image_data = image_data.translate(REVERSE_TABLE)
+
+    if INVERT_BITS:
+        image_data = bytes(b ^ 0xFF for b in image_data)
+    elif AUTO_INVERT:
+        total_bits = row_bytes * 8 * height
+        black_bits = sum(BIT_COUNTS[b] for b in image_data)
+        ratio = black_bits / total_bits if total_bits else 0.0
+        log(f"Black ratio: {ratio:.3f}")
+        if ratio > 0.65:
+            log("Auto-inverting bitmap due to high black ratio")
+            image_data = bytes(b ^ 0xFF for b in image_data)
+
+    return image_data
 
 def process_pbm_data(data):
     """Parse PBM file data and emit ZPL."""
     # PBM file format (P4)
-    # Header: P4\nWidth Height\nData
-    
-    if len(data) < 3: return
-    
-    # Check for P4 magic number
-    if data[:2] != b'P4':
+    if len(data) < 3:
+        return
+
+    if data[:2] != b"P4":
         sys.stderr.write("ERROR: Not a P4 PBM file\n")
         return
 
-    # Parse Header
     offset = 2
-    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
-    
-    # Skip comments if any
-    while offset < len(data) and chr(data[offset]) == '#':
-        while offset < len(data) and chr(data[offset]) != '\n': offset += 1
+    while offset < len(data) and chr(data[offset]).isspace():
         offset += 1
-        while offset < len(data) and chr(data[offset]).isspace(): offset += 1
 
-    # Width
+    while offset < len(data) and chr(data[offset]) == "#":
+        while offset < len(data) and chr(data[offset]) != "\n":
+            offset += 1
+        offset += 1
+        while offset < len(data) and chr(data[offset]).isspace():
+            offset += 1
+
     w_start = offset
-    while offset < len(data) and not chr(data[offset]).isspace(): offset += 1
-    if offset >= len(data): return
+    while offset < len(data) and not chr(data[offset]).isspace():
+        offset += 1
+    if offset >= len(data):
+        return
     width = int(data[w_start:offset])
-    
-    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
-    
-    # Height
+
+    while offset < len(data) and chr(data[offset]).isspace():
+        offset += 1
+
     h_start = offset
-    while offset < len(data) and not chr(data[offset]).isspace(): offset += 1
-    if offset >= len(data): return
+    while offset < len(data) and not chr(data[offset]).isspace():
+        offset += 1
+    if offset >= len(data):
+        return
     height = int(data[h_start:offset])
-    
-    while offset < len(data) and chr(data[offset]).isspace(): offset += 1
-    
-    # Binary data starts here
+
+    while offset < len(data) and chr(data[offset]).isspace():
+        offset += 1
+
     image_data = data[offset:]
-    
     row_bytes = (width + 7) // 8
-    
-    # Emit
+    image_data = maybe_transform_image(image_data, row_bytes, height)
+
+    log(f"PBM {width}x{height}, row_bytes={row_bytes}, bytes={len(image_data)}")
     emit_zpl(width, height, row_bytes, image_data)
 
 def emit_zpl(width, height, row_bytes, data):
     """Output ZPL for a single image."""
-    
     sys.stdout.buffer.write(b"^XA")
     sys.stdout.buffer.write(b"^PW%d" % width)
     sys.stdout.buffer.write(b"^LL%d" % height)
-    sys.stdout.buffer.write(b"^PON") # Print Orientation Normal
-    
-    # Graphic Field
-    # ^GFA,bytes,total_bytes,row_bytes,data
-    # data needs to be hex encoded
-    
-    hex_data = data.hex().upper().encode('ascii')
-    
+    sys.stdout.buffer.write(b"^PON")
+
+    hex_data = data.hex().upper().encode("ascii")
     sys.stdout.buffer.write(b"^FO0,0^GFA,%d,%d,%d," % (len(data), len(data), row_bytes))
     sys.stdout.buffer.write(hex_data)
     sys.stdout.buffer.write(b"^FS")
     sys.stdout.buffer.write(b"^XZ\n")
 
+def pdf_to_zpl(input_path, job_id, user, title, copies, options):
+    """Convert PDF or PS to ZPL."""
+    if not require_tool("pdftoppm", "Install poppler-utils."):
+        return 1
+
+    temp_dir = tempfile.mkdtemp(prefix="cups_zpl_")
+    try:
+        if input_path and input_path != "-":
+            source_path = input_path
+        else:
+            source_path = os.path.join(temp_dir, "input")
+            input_data = sys.stdin.buffer.read()
+            if len(input_data) == 0:
+                sys.stderr.write("ERROR: No input data received on stdin\n")
+                return 1
+            with open(source_path, "wb") as f:
+                f.write(input_data)
+
+        file_type = sniff_file_type(source_path)
+        log(f"Input type: {file_type}")
+
+        if file_type == "ps":
+            pdf_path = os.path.join(temp_dir, "input.pdf")
+            if not ps_to_pdf(source_path, pdf_path):
+                return 1
+        else:
+            pdf_path = source_path
+
+        if FIT_TO_LABEL and file_type in ("ps", "pdf"):
+            fit_path = os.path.join(temp_dir, "fit.pdf")
+            if prepare_pdf_for_label(pdf_path, fit_path):
+                pdf_path = fit_path
+
+        pbm_files = render_pdf_to_pbm(pdf_path, temp_dir)
+        if not pbm_files:
+            sys.stderr.write(f"ERROR: No PBM files generated in {temp_dir}\n")
+            return 1
+
+        for pbm_file in pbm_files:
+            with open(pbm_file, "rb") as f:
+                data = f.read()
+                process_pbm_data(data)
+
+    except Exception as e:
+        sys.stderr.write(f"ERROR: Conversion failed: {e}\n")
+        return 1
+    finally:
+        shutil.rmtree(temp_dir)
+    return 0
+
 if __name__ == "__main__":
     if len(sys.argv) < 6:
         sys.stderr.write("Usage: pdftozpl job-id user title copies options [file]\n")
-        
+
     job_id = sys.argv[1] if len(sys.argv) > 1 else "1"
     user = sys.argv[2] if len(sys.argv) > 2 else "unknown"
     title = sys.argv[3] if len(sys.argv) > 3 else "untitled"
     copies = sys.argv[4] if len(sys.argv) > 4 else "1"
     options = sys.argv[5] if len(sys.argv) > 5 else ""
     filename = sys.argv[6] if len(sys.argv) > 6 else None
-    
+
     sys.exit(pdf_to_zpl(filename, job_id, user, title, copies, options))

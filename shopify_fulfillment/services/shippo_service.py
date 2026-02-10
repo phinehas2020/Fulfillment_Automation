@@ -348,12 +348,26 @@ class ShippoService:
         try:
             _logger.info("Attempting to download from URL: %s", url)
             r = requests.get(url, timeout=10)
-            _logger.info("Download response: status=%s, content-type=%s, length=%d", 
-                        r.status_code, r.headers.get('content-type'), len(r.text))
+            payload_bytes = r.content or b""
+            _logger.info(
+                "Download response: status=%s, content-type=%s, length=%d",
+                r.status_code,
+                r.headers.get("content-type"),
+                len(payload_bytes),
+            )
             if r.status_code == 200:
-                return r.text
+                if payload_bytes.startswith(b"%PDF-"):
+                    # Preserve bytes losslessly for PDF transport by using 1:1 Latin-1 mapping.
+                    return payload_bytes.decode("latin1")
+
+                preferred_encoding = r.encoding or "utf-8"
+                try:
+                    return payload_bytes.decode(preferred_encoding)
+                except Exception:
+                    return payload_bytes.decode("latin1", errors="ignore")
             else:
-                _logger.error("Download failed with status %s: %s", r.status_code, r.text[:200])
+                response_preview = payload_bytes[:200].decode("latin1", errors="ignore")
+                _logger.error("Download failed with status %s: %s", r.status_code, response_preview)
         except Exception as e:
             _logger.exception("Failed to download label content from %s: %s", url, e)
         return None

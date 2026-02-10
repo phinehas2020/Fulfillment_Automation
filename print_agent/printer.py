@@ -1,5 +1,6 @@
 """Lightweight printer wrapper (skeleton)."""
 
+import os
 import subprocess
 import tempfile
 
@@ -65,16 +66,13 @@ class Printer:
                 temp_file.write(payload)
                 file_path = temp_file.name
 
-            process = subprocess.run(
-                ["lp", "-d", CUPS_PRINTER_NAME, file_path],
-                capture_output=True,
-                timeout=30,
-            )
-            if process.returncode != 0:
-                raise PrinterError(f"lp failed: {process.stderr.decode()}")
+            # Convert PDF to ZPL first to guarantee Zebra-compatible output
+            # regardless of CUPS queue/PPD state.
+            zpl_output = self._convert_pdf_to_zpl(file_path)
+            self.send_zpl(zpl_output)
             return True
         except FileNotFoundError:
-            raise PrinterError("lp command not found. Is CUPS installed?")
+            raise PrinterError("Required printing command not found. Is CUPS installed?")
         except subprocess.TimeoutExpired:
             raise PrinterError("PDF print job timed out")
         except Exception as exc:
@@ -82,9 +80,26 @@ class Printer:
         finally:
             if file_path:
                 try:
-                    import os
-
                     os.unlink(file_path)
                 except OSError:
                     pass
 
+    def _convert_pdf_to_zpl(self, pdf_path: str) -> str:
+        script_path = os.path.join(os.path.dirname(__file__), "pdftozpl")
+        if not os.path.exists(script_path):
+            raise PrinterError(f"pdftozpl script not found at {script_path}")
+
+        process = subprocess.run(
+            [script_path, "1", "agent", "label", "1", "", pdf_path],
+            capture_output=True,
+            timeout=60,
+        )
+        if process.returncode != 0:
+            stderr = process.stderr.decode("utf-8", errors="ignore")
+            raise PrinterError(f"pdftozpl failed: {stderr}")
+
+        output_bytes = process.stdout or b""
+        if not output_bytes:
+            raise PrinterError("pdftozpl produced empty output")
+
+        return output_bytes.decode("utf-8", errors="ignore")
