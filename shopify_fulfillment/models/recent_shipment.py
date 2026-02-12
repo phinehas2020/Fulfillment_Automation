@@ -47,7 +47,7 @@ class ShippoRecentTransaction(models.TransientModel):
 
         local_by_tracking = {}
         if tracking_numbers:
-            local_shipments = self.env["fulfillment.shipment"].sudo().search(
+            local_shipments = self.env["fulfillment.shipment"].search(
                 [("tracking_number", "in", tracking_numbers)],
                 order="id desc",
             )
@@ -87,7 +87,7 @@ class ShippoRecentTransaction(models.TransientModel):
             )
 
         if rows:
-            self.sudo().create(rows)
+            self.create(rows)
 
         action = self.env.ref("shopify_fulfillment.action_recent_shipments").read()[0]
         action["domain"] = [("user_id", "=", self.env.uid)]
