@@ -89,9 +89,13 @@ class ShippoRecentTransaction(models.TransientModel):
         if rows:
             self.create(rows)
 
-        action = self.env.ref("shopify_fulfillment.action_recent_shipments").read()[0]
-        action["domain"] = [("user_id", "=", self.env.uid)]
-        return action
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Recent Shipments",
+            "res_model": "shippo.recent.transaction",
+            "view_mode": "list,form",
+            "domain": [("user_id", "=", self.env.uid)],
+        }
 
     def action_reprint_label(self):
         self.ensure_one()
