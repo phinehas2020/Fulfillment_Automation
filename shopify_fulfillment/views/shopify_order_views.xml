@@ -4,7 +4,7 @@
         <field name="name">shopify.order.list</field>
         <field name="model">shopify.order</field>
         <field name="arch" type="xml">
-            <list>
+            <list default_order="created_at desc, id desc">
                 <header>
                     <button name="action_import_from_shopify" type="object" string="Sync Orders from Shopify" class="btn-primary"/>
                 </header>
@@ -193,4 +193,3 @@
         </field>
     </record>
 </odoo>
-

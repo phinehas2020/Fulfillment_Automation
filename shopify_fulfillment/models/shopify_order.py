@@ -24,6 +24,7 @@ class ShopifyOrder(models.Model):
     _name = "shopify.order"
     _description = "Shopify Order"
     _rec_name = "order_name"
+    _order = "created_at desc, id desc"
     _sql_constraints = [
         ("shopify_id_unique", "unique(shopify_id)", "Shopify order already exists."),
     ]
