@@ -22,6 +22,8 @@
                             <field name="print_agent_api_key" password="True"/>
                             <field name="print_agent_max_attempts"/>
                             <field name="print_agent_lease_seconds"/>
+                            <field name="fulfillment_error_alert_emails" placeholder="ops@example.com, warehouse@example.com"/>
+                            <field name="fulfillment_error_alert_teams_webhook_url" password="True"/>
                         </group>
                         <group string="Automation">
                             <field name="fulfillment_auto_process"/>
@@ -32,6 +34,7 @@
                     </group>
                 </sheet>
                 <footer>
+                    <button name="action_send_test_alert" type="object" string="Send Test Alerts" class="btn-secondary"/>
                     <button name="action_save" type="object" string="Save" class="btn-primary"/>
                     <button string="Cancel" class="btn-secondary" special="cancel"/>
                 </footer>

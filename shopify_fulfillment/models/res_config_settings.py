@@ -20,6 +20,16 @@ class ResConfigSettings(models.TransientModel):
         string="Print Agent Lease Seconds",
         default=300,
     )
+    fulfillment_error_alert_emails = fields.Char(
+        config_parameter='fulfillment.error_alert_emails',
+        string="Error Alert Emails",
+        help="Comma-separated recipient list for immediate fulfillment error alerts.",
+    )
+    fulfillment_error_alert_teams_webhook_url = fields.Char(
+        config_parameter='fulfillment.error_alert_teams_webhook_url',
+        string="Teams Error Alert Webhook URL",
+        help="Microsoft Teams incoming webhook URL for immediate fulfillment error alerts.",
+    )
     
     # Many2one fields don't support config_parameter directly in Odoo safely.
     # We use manual get/set for these.

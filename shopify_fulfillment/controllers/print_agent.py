@@ -4,6 +4,7 @@ from datetime import timedelta
 from odoo import fields, http
 from odoo.http import request, Response
 
+from ..services.alert_service import AlertService
 from ..services.shopify_api import ShopifyAPI
 
 
@@ -188,6 +189,16 @@ class PrintAgentController(http.Controller):
                             "line": "0",
                             "func": "complete",
                         }
+                    )
+                    AlertService.from_env(request.env).notify_error(
+                        title="Shopify Fulfillment Push Failed",
+                        message=str(exc),
+                        order=job.order_id,
+                        extra={
+                            "print_job_id": str(job.id),
+                            "shipment_id": str(job.shipment_id.id if job.shipment_id else ""),
+                            "endpoint": "/print-agent/complete",
+                        },
                     )
 
         return request.make_response(

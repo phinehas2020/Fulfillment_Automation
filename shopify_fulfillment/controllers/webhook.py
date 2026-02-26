@@ -8,7 +8,7 @@ from odoo import http
 from odoo.http import request
 from psycopg2 import IntegrityError
 
-from ..services.shopify_api import ShopifyAPI
+from ..services.alert_service import AlertService
 
 _logger = logging.getLogger(__name__)
 
@@ -36,42 +36,53 @@ class ShopifyWebhookController(http.Controller):
             _logger.warning("Invalid Shopify webhook signature")
             return http.Response("Invalid signature", status=401)
 
-        payload = json.loads(raw_body.decode("utf-8"))
-        
-        # Skip POS orders
-        if payload.get("source_name") == "pos":
-            _logger.info("Skipping POS order %s (source_name=pos)", payload.get("id"))
-            return {"status": "skipped", "reason": "pos_order"}
-
-        order_model = request.env["shopify.order"].sudo()
-
-        existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
-        if existing:
-            return {"status": "duplicate", "order_id": existing.id}
-
-        order_vals = self._prepare_order_vals(payload)
         try:
-            order = order_model.create(order_vals)
-        except IntegrityError:
-            request.env.cr.rollback()
+            payload = json.loads(raw_body.decode("utf-8"))
+
+            # Skip POS orders
+            if payload.get("source_name") == "pos":
+                _logger.info("Skipping POS order %s (source_name=pos)", payload.get("id"))
+                return {"status": "skipped", "reason": "pos_order"}
+
+            order_model = request.env["shopify.order"].sudo()
+
             existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
-            return {"status": "duplicate", "order_id": existing.id if existing else False}
-        
-        # Create/update customer in Odoo database
-        try:
-            order._create_or_update_partner()
-        except Exception as partner_err:
-            _logger.warning("Failed to create partner for order %s: %s", order.id, partner_err)
-        
-        # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
-        auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
-        if auto_process.lower() in ("true", "1", "yes"):
-            order.process_order()
-            _logger.info("Order %s auto-processed", order.id)
-        else:
-            _logger.info("Order %s created (auto-process disabled)", order.id)
-            
-        return {"status": "ok", "order_id": order.id}
+            if existing:
+                return {"status": "duplicate", "order_id": existing.id}
+
+            order_vals = self._prepare_order_vals(payload)
+            try:
+                order = order_model.create(order_vals)
+            except IntegrityError:
+                request.env.cr.rollback()
+                existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
+                return {"status": "duplicate", "order_id": existing.id if existing else False}
+
+            # Create/update customer in Odoo database
+            try:
+                order._create_or_update_partner()
+            except Exception as partner_err:
+                _logger.warning("Failed to create partner for order %s: %s", order.id, partner_err)
+
+            # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
+            auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
+            if auto_process.lower() in ("true", "1", "yes"):
+                order.process_order()
+                _logger.info("Order %s auto-processed", order.id)
+            else:
+                _logger.info("Order %s created (auto-process disabled)", order.id)
+
+            return {"status": "ok", "order_id": order.id}
+        except Exception as exc:  # pylint: disable=broad-except
+            _logger.exception("Shopify webhook processing failed")
+            AlertService.from_env(request.env).notify_error(
+                title="Shopify Webhook Error",
+                message=str(exc),
+                extra={
+                    "endpoint": "/shopify/webhook/order",
+                },
+            )
+            return http.Response("Webhook processing failed", status=500)
 
     @staticmethod
     def _validate_hmac(payload: bytes, signature: str, secret: str) -> bool:
@@ -105,7 +116,13 @@ class ShopifyWebhookController(http.Controller):
         source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
         
         shipping_lines = payload.get("shipping_lines") or []
-        requested_method = shipping_lines[0].get("title") if shipping_lines else False
+        requested_method = False
+        if shipping_lines:
+            requested_method = (
+                shipping_lines[0].get("title")
+                or shipping_lines[0].get("code")
+                or shipping_lines[0].get("carrier_identifier")
+            )
         
         return {
             "shopify_id": str(payload.get("id")),
@@ -137,4 +154,3 @@ class ShopifyWebhookController(http.Controller):
             return dt.replace(tzinfo=None)  # Odoo expects naive UTC
         except Exception:
             return False
-

@@ -1,10 +1,21 @@
 import json
 import logging
+import re
+import unicodedata
 from typing import Optional
 
 from odoo import api, exceptions, fields, models
 
 _logger = logging.getLogger(__name__)
+
+
+SHIPPING_METHOD_STOP_WORDS = {
+    "air",
+    "delivery",
+    "mail",
+    "shipping",
+    "service",
+}
 
 
 class ShopifyOrder(models.Model):
@@ -603,7 +614,13 @@ class ShopifyOrder(models.Model):
         source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
         
         shipping_lines = payload.get("shipping_lines") or []
-        requested_method = shipping_lines[0].get("title") if shipping_lines else False
+        requested_method = False
+        if shipping_lines:
+            requested_method = (
+                shipping_lines[0].get("title")
+                or shipping_lines[0].get("code")
+                or shipping_lines[0].get("carrier_identifier")
+            )
         
         created_at = False
         if payload.get("created_at"):
@@ -692,6 +709,41 @@ class ShopifyOrder(models.Model):
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception("Order processing failed for %s", order.id)
                 order.write({"state": "error", "error_message": str(exc)})
+
+    def _send_error_alert(self, title: str, message: str, extra: Optional[dict] = None):
+        self.ensure_one()
+        try:
+            from odoo.addons.shopify_fulfillment.services.alert_service import AlertService
+
+            AlertService.from_env(self.env).notify_error(
+                title=title,
+                message=message,
+                order=self,
+                extra=extra,
+            )
+        except Exception as alert_exc:  # pylint: disable=broad-except
+            _logger.exception("Order %s: failed to send error alert: %s", self.id, alert_exc)
+
+    def write(self, vals):
+        tracked = None
+        if vals.get("state") == "error":
+            tracked = {order.id: order.state for order in self}
+
+        res = super().write(vals)
+
+        if tracked:
+            alert_message = vals.get("error_message")
+            for order in self:
+                if tracked.get(order.id) == "error":
+                    continue
+                message = alert_message or order.error_message or "Order moved to error state."
+                order._send_error_alert(
+                    title="Order Processing Error",
+                    message=message,
+                    extra={"previous_state": tracked.get(order.id) or "-"},
+                )
+
+        return res
 
     def _process_order_inner(self):
         self.ensure_one()
@@ -1011,8 +1063,8 @@ class ShopifyOrder(models.Model):
                     ]
                     
                     if ups_rates:
-                        # Select cheapest UPS rate
-                        ups_rate = sorted(ups_rates, key=lambda r: float(r.get("amount", 999999)))[0]
+                        # Re-run selector so expedited requests cannot downgrade on carrier fallback.
+                        ups_rate = self._select_shipping_rate(ups_rates)
                         _logger.info(
                             "Order %s Box %d: Trying UPS %s at $%s",
                             self.id, sequence,
@@ -1083,6 +1135,116 @@ class ShopifyOrder(models.Model):
         )
         return shipment
 
+    @staticmethod
+    def _normalize_shipping_text(value: str) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKD", value)
+        normalized = normalized.encode("ascii", "ignore").decode("ascii")
+        normalized = normalized.lower()
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @classmethod
+    def _shipping_speed_class(cls, normalized_value: str) -> Optional[str]:
+        if not normalized_value:
+            return None
+
+        if re.search(r"\b(overnight|next day|nextday|1 day|one day|priority overnight|first overnight)\b", normalized_value):
+            return "overnight"
+        if re.search(r"\b(2 day|two day|2nd day|second day|48 hour)\b", normalized_value):
+            return "two_day"
+        if re.search(r"\b(3 day|three day|3rd day|third day|72 hour)\b", normalized_value):
+            return "three_day"
+        if re.search(r"\b(express|expedited|rush)\b", normalized_value):
+            return "expedited"
+        if re.search(r"\b(priority)\b", normalized_value):
+            return "expedited"
+        if re.search(r"\b(ground|standard|economy|saver|surepost|smartpost)\b", normalized_value):
+            return "ground"
+        return None
+
+    @staticmethod
+    def _shipping_provider_hint(normalized_value: str) -> Optional[str]:
+        if "ups" in normalized_value:
+            return "UPS"
+        if "usps" in normalized_value or "postal service" in normalized_value:
+            return "USPS"
+        if "fedex" in normalized_value or "federal express" in normalized_value:
+            return "FEDEX"
+        if "dhl" in normalized_value:
+            return "DHL"
+        if "ontrac" in normalized_value:
+            return "ONTRAC"
+        return None
+
+    @classmethod
+    def _is_expedited_request(cls, normalized_value: str, speed_class: Optional[str]) -> bool:
+        if speed_class in {"overnight", "two_day", "three_day", "expedited"}:
+            return True
+        if re.search(r"\b(next|overnight|express|expedited|priority|rush)\b", normalized_value):
+            return True
+        return False
+
+    @staticmethod
+    def _is_speed_compatible(requested_speed: Optional[str], candidate_speed: Optional[str]) -> bool:
+        if not requested_speed or not candidate_speed:
+            return False
+        if requested_speed == "overnight":
+            return candidate_speed == "overnight"
+        if requested_speed == "two_day":
+            return candidate_speed in {"two_day", "overnight"}
+        if requested_speed == "three_day":
+            return candidate_speed in {"three_day", "two_day", "overnight"}
+        if requested_speed == "expedited":
+            return candidate_speed in {"expedited", "three_day", "two_day", "overnight"}
+        if requested_speed == "ground":
+            return candidate_speed == "ground"
+        return requested_speed == candidate_speed
+
+    @staticmethod
+    def _token_overlap_score(left: str, right: str) -> int:
+        left_tokens = {
+            tok for tok in left.split()
+            if tok and tok not in SHIPPING_METHOD_STOP_WORDS
+        }
+        right_tokens = {
+            tok for tok in right.split()
+            if tok and tok not in SHIPPING_METHOD_STOP_WORDS
+        }
+        if not left_tokens or not right_tokens:
+            return 0
+        return len(left_tokens.intersection(right_tokens))
+
+    def _requested_shipping_context(self) -> dict:
+        snippets = [self.requested_shipping_method or ""]
+        if self.raw_payload:
+            try:
+                payload = json.loads(self.raw_payload)
+                shipping_lines = payload.get("shipping_lines") or []
+                if shipping_lines:
+                    line = shipping_lines[0] or {}
+                    for key in ("title", "code", "carrier_identifier", "source"):
+                        value = line.get(key)
+                        if isinstance(value, str) and value.strip():
+                            snippets.append(value)
+            except Exception:
+                _logger.debug(
+                    "Order %s: unable to parse raw payload for shipping-line hints",
+                    self.id,
+                )
+
+        merged = " ".join(s for s in snippets if s).strip()
+        normalized = self._normalize_shipping_text(merged)
+        speed_class = self._shipping_speed_class(normalized)
+        return {
+            "raw": merged,
+            "normalized": normalized,
+            "speed_class": speed_class,
+            "provider_hint": self._shipping_provider_hint(normalized),
+            "is_expedited": self._is_expedited_request(normalized, speed_class),
+        }
+
     def _select_shipping_rate(self, rates: list) -> dict:
         """Select the best shipping rate from available options.
 
@@ -1091,29 +1253,111 @@ class ShopifyOrder(models.Model):
         if not rates:
             return {}
 
+        def _rate_amount(rate):
+            try:
+                return float(rate.get("amount", 999999))
+            except Exception:
+                return 999999.0
+
         # Sort by amount (cheapest first)
-        cheapest = sorted(rates, key=lambda r: float(r.get("amount", 999999)))[0]
+        cheapest = sorted(rates, key=_rate_amount)[0]
         selected_rate = cheapest
 
         if self.requested_shipping_method:
-            req_norm = self.requested_shipping_method.strip().lower()
-            for r in rates:
-                s_name = r.get("servicelevel", {}).get("name", "").strip().lower()
-                if s_name == req_norm:
-                    selected_rate = r
-                    _logger.info(
-                        "Order %s: Found matching rate for '%s': %s - $%s",
-                        self.id,
-                        self.requested_shipping_method,
-                        r.get("servicelevel", {}).get("name"),
-                        r.get("amount"),
-                    )
-                    break
+            req_ctx = self._requested_shipping_context()
+            req_norm = req_ctx["normalized"]
+            req_speed = req_ctx["speed_class"]
+            req_provider = req_ctx["provider_hint"]
+
+            enriched_rates = []
+            for rate in rates:
+                service = self._normalize_shipping_text(rate.get("servicelevel", {}).get("name", ""))
+                provider = self._normalize_shipping_text(rate.get("provider", ""))
+                combined = " ".join(v for v in (provider, service) if v).strip()
+                enriched_rates.append(
+                    {
+                        "rate": rate,
+                        "amount": _rate_amount(rate),
+                        "service": service,
+                        "provider": provider,
+                        "combined": combined,
+                        "speed_class": self._shipping_speed_class(combined),
+                    }
+                )
+
+            provider_rates = []
+            if req_provider:
+                provider_rates = [
+                    item for item in enriched_rates
+                    if self._normalize_shipping_text(req_provider) in item["provider"]
+                ]
+
+            candidate_pool = provider_rates or enriched_rates
+
+            # Highest-confidence match first: exact normalized match.
+            exact_matches = [
+                item for item in candidate_pool
+                if item["service"] == req_norm or item["combined"] == req_norm
+            ]
+            if exact_matches:
+                selected_rate = sorted(exact_matches, key=lambda item: item["amount"])[0]["rate"]
             else:
-                _logger.warning(
-                    "Order %s: Requested shipping '%s' not found. Using cheapest.",
+                # Next best: phrase containment.
+                contains_matches = [
+                    item for item in candidate_pool
+                    if req_norm and (
+                        req_norm in item["combined"]
+                        or item["combined"] in req_norm
+                    )
+                ]
+                if contains_matches:
+                    selected_rate = sorted(contains_matches, key=lambda item: item["amount"])[0]["rate"]
+                else:
+                    # Then speed-class match (overnight, 2-day, etc).
+                    speed_matches = [
+                        item for item in candidate_pool
+                        if self._is_speed_compatible(req_speed, item["speed_class"])
+                    ]
+                    if speed_matches:
+                        selected_rate = sorted(speed_matches, key=lambda item: item["amount"])[0]["rate"]
+                    else:
+                        # Last attempt: fuzzy token overlap between requested phrase and rate name.
+                        scored = [
+                            (self._token_overlap_score(req_norm, item["combined"]), item)
+                            for item in candidate_pool
+                        ]
+                        scored = [pair for pair in scored if pair[0] >= 2]
+                        if scored:
+                            top_score = max(pair[0] for pair in scored)
+                            top_matches = [pair[1] for pair in scored if pair[0] == top_score]
+                            selected_rate = sorted(top_matches, key=lambda item: item["amount"])[0]["rate"]
+                        elif req_ctx["is_expedited"]:
+                            available = ", ".join(
+                                sorted({
+                                    r.get("servicelevel", {}).get("name") or "Unknown service"
+                                    for r in rates
+                                })
+                            )
+                            raise exceptions.UserError(
+                                "Requested shipping method '%s' could not be matched to an expedited Shippo "
+                                "rate. Available rates: %s. Order held to prevent a slower label purchase."
+                                % (self.requested_shipping_method, available)
+                            )
+                        else:
+                            _logger.warning(
+                                "Order %s: Requested shipping '%s' not found. Using cheapest.",
+                                self.id,
+                                self.requested_shipping_method,
+                            )
+
+            if selected_rate:
+                _logger.info(
+                    "Order %s: Selected rate for '%s': %s (%s) - $%s",
                     self.id,
                     self.requested_shipping_method,
+                    selected_rate.get("servicelevel", {}).get("name"),
+                    selected_rate.get("provider"),
+                    selected_rate.get("amount"),
                 )
 
         return selected_rate

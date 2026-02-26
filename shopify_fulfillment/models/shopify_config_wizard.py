@@ -18,6 +18,8 @@ class ShopifyConfigWizard(models.TransientModel):
     print_agent_api_key = fields.Char(string="Print Agent API Key")
     print_agent_max_attempts = fields.Integer(string="Max Attempts")
     print_agent_lease_seconds = fields.Integer(string="Lease Seconds")
+    fulfillment_error_alert_emails = fields.Char(string="Error Alert Emails")
+    fulfillment_error_alert_teams_webhook_url = fields.Char(string="Teams Error Alert Webhook URL")
 
     # Automation
     fulfillment_auto_process = fields.Boolean(string="Auto-Process Orders")
@@ -51,6 +53,8 @@ class ShopifyConfigWizard(models.TransientModel):
             'print_agent_api_key': ICP.get_param('print_agent.api_key', ''),
             'print_agent_max_attempts': int(ICP.get_param('print_agent.max_attempts', '3') or 3),
             'print_agent_lease_seconds': int(ICP.get_param('print_agent.lease_seconds', '300') or 300),
+            'fulfillment_error_alert_emails': ICP.get_param('fulfillment.error_alert_emails', ''),
+            'fulfillment_error_alert_teams_webhook_url': ICP.get_param('fulfillment.error_alert_teams_webhook_url', ''),
             'fulfillment_auto_process': ICP.get_param('fulfillment.auto_process', 'False') == 'True',
             'fulfillment_default_user_id': self._get_param_as_int('fulfillment.default_user_id'),
             'fulfillment_risk_reviewer_id': self._get_param_as_int('fulfillment.risk_reviewer_id'),
@@ -70,6 +74,8 @@ class ShopifyConfigWizard(models.TransientModel):
         ICP.set_param('print_agent.api_key', self.print_agent_api_key or '')
         ICP.set_param('print_agent.max_attempts', str(self.print_agent_max_attempts or 3))
         ICP.set_param('print_agent.lease_seconds', str(self.print_agent_lease_seconds or 300))
+        ICP.set_param('fulfillment.error_alert_emails', self.fulfillment_error_alert_emails or '')
+        ICP.set_param('fulfillment.error_alert_teams_webhook_url', self.fulfillment_error_alert_teams_webhook_url or '')
         ICP.set_param('fulfillment.auto_process', str(self.fulfillment_auto_process))
         ICP.set_param('fulfillment.default_user_id', str(self.fulfillment_default_user_id.id or ''))
         ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))
@@ -83,5 +89,42 @@ class ShopifyConfigWizard(models.TransientModel):
                 'message': 'Configuration saved successfully!',
                 'type': 'success',
                 'sticky': False,
+            }
+        }
+
+    def action_send_test_alert(self):
+        """Trigger a manual test alert through configured channels."""
+        self.ensure_one()
+
+        # Persist current draft values first so test uses what user just entered.
+        self.action_save()
+
+        from odoo.addons.shopify_fulfillment.services.alert_service import AlertService
+
+        message = (
+            "This is a test alert from Shopify Fulfillment configuration. "
+            "If you received this, immediate error alerts are active."
+        )
+        success = AlertService.from_env(self.env).notify_error(
+            title="Test Fulfillment Alert",
+            message=message,
+            extra={
+                "trigger": "manual_test_button",
+                "user": self.env.user.display_name or "",
+            },
+        )
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Test Alert Sent' if success else 'Test Alert Failed',
+                'message': (
+                    'At least one alert channel accepted the test message.'
+                    if success
+                    else 'No alert channels are configured or delivery failed. Check email/webhook settings.'
+                ),
+                'type': 'success' if success else 'warning',
+                'sticky': not success,
             }
         }

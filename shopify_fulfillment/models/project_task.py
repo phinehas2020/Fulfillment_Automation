@@ -11,6 +11,23 @@ class ProjectTask(models.Model):
     is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
     fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
 
+    def _send_task_error_alert(self, title: str, message: str):
+        self.ensure_one()
+        try:
+            from odoo.addons.shopify_fulfillment.services.alert_service import AlertService
+
+            AlertService.from_env(self.env).notify_error(
+                title=title,
+                message=message,
+                order=self.shopify_order_id if self.shopify_order_id else None,
+                extra={
+                    "task_id": str(self.id),
+                    "task_name": self.name or "",
+                },
+            )
+        except Exception:
+            _logger.exception("Task %s: failed to send task error alert", self.id)
+
     def action_fulfillment_deduct_inventory(self):
         """Deduct inventory for the linked Shopify Order."""
         self.ensure_one()
@@ -137,10 +154,12 @@ class ProjectTask(models.Model):
             except Exception as so_err:
                 _logger.warning("Failed to create sale order for %s: %s", self.shopify_order_id.order_name, so_err)
                 self.message_post(body=_("Sale order creation failed: %s") % str(so_err))
+                self._send_task_error_alert("Sale Order Creation Failed", str(so_err))
                 
         except Exception as e:
             _logger.exception("Failed to validate picking for task %s", self.id)
             self.message_post(body=_("Failed to validate inventory delivery: %s") % str(e))
+            self._send_task_error_alert("Inventory Validation Failed", str(e))
             # Keep the picking around so it can be fixed manually if needed
             # But don't mark as deducted
 
@@ -155,6 +174,7 @@ class ProjectTask(models.Model):
                 except Exception as e:
                     _logger.exception("Error in auto-deduct inventory on create")
                     task.message_post(body=_("Background error during inventory deduction: %s") % str(e))
+                    task._send_task_error_alert("Inventory Auto-Deduct Failed (Create)", str(e))
         return tasks
 
     def write(self, vals):
@@ -169,6 +189,6 @@ class ProjectTask(models.Model):
                           # Don't block the write
                           _logger.exception("Error in auto-deduct inventory on write")
                           task.message_post(body=_("Background error during inventory deduction: %s") % str(e))
+                          task._send_task_error_alert("Inventory Auto-Deduct Failed (Write)", str(e))
         
         return res
-
