@@ -9,6 +9,7 @@ from odoo.http import request
 from psycopg2 import IntegrityError
 
 from ..services.alert_service import AlertService
+from ..services.address_utils import normalize_address_lines
 
 _logger = logging.getLogger(__name__)
 
@@ -94,6 +95,10 @@ class ShopifyWebhookController(http.Controller):
 
     def _prepare_order_vals(self, payload: dict):
         shipping = payload.get("shipping_address") or {}
+        shipping_line1, shipping_line2 = normalize_address_lines(
+            shipping.get("address1"),
+            shipping.get("address2"),
+        )
         line_vals = []
         for line in payload.get("line_items", []):
             line_vals.append(
@@ -130,8 +135,8 @@ class ShopifyWebhookController(http.Controller):
             "order_name": payload.get("name"),
             "email": payload.get("email"),
             "customer_name": f"{shipping.get('first_name', '')} {shipping.get('last_name', '')}".strip(),
-            "shipping_address_line1": shipping.get("address1"),
-            "shipping_address_line2": shipping.get("address2"),
+            "shipping_address_line1": shipping_line1,
+            "shipping_address_line2": shipping_line2,
             "shipping_city": shipping.get("city"),
             "shipping_state": shipping.get("province_code"),
             "shipping_zip": shipping.get("zip"),

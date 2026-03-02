@@ -3,6 +3,7 @@ import re
 import requests
 import json
 from odoo import exceptions
+from .address_utils import normalize_address_lines
 
 _logger = logging.getLogger(__name__)
 
@@ -55,10 +56,19 @@ class ShippoService:
 
         # 1. Prepare Addresses
         # Ensure we have defaults for missing fields to avoid 400 errors
+        to_street1, to_street2 = normalize_address_lines(
+            order.shipping_address_line1,
+            order.shipping_address_line2,
+        )
+        from_street1, from_street2 = normalize_address_lines(
+            sender_company.street,
+            sender_company.street2,
+        )
+
         address_to = {
             "name": order.customer_name or "Customer",
-            "street1": order.shipping_address_line1 or "",
-            "street2": order.shipping_address_line2 or "",
+            "street1": to_street1,
+            "street2": to_street2,
             "city": order.shipping_city or "",
             "state": order.shipping_state or "",
             "zip": order.shipping_zip or "",
@@ -69,8 +79,8 @@ class ShippoService:
 
         address_from = {
             "name": sender_company.name,
-            "street1": sender_company.street or "",
-            "street2": sender_company.street2 or "",
+            "street1": from_street1,
+            "street2": from_street2,
             "city": sender_company.city or "",
             "state": sender_company.state_id.code if sender_company.state_id else "",
             "zip": sender_company.zip or "",
@@ -153,10 +163,19 @@ class ShippoService:
         url = f"{self.API_URL}/shipments"
 
         # Prepare addresses (same as get_rates)
+        to_street1, to_street2 = normalize_address_lines(
+            order.shipping_address_line1,
+            order.shipping_address_line2,
+        )
+        from_street1, from_street2 = normalize_address_lines(
+            sender_company.street,
+            sender_company.street2,
+        )
+
         address_to = {
             "name": order.customer_name or "Customer",
-            "street1": order.shipping_address_line1 or "",
-            "street2": order.shipping_address_line2 or "",
+            "street1": to_street1,
+            "street2": to_street2,
             "city": order.shipping_city or "",
             "state": order.shipping_state or "",
             "zip": order.shipping_zip or "",
@@ -167,8 +186,8 @@ class ShippoService:
 
         address_from = {
             "name": sender_company.name,
-            "street1": sender_company.street or "",
-            "street2": sender_company.street2 or "",
+            "street1": from_street1,
+            "street2": from_street2,
             "city": sender_company.city or "",
             "state": sender_company.state_id.code if sender_company.state_id else "",
             "zip": sender_company.zip or "",
