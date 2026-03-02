@@ -11,6 +11,10 @@ class ProjectTask(models.Model):
     is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
     fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
 
+    @staticmethod
+    def _is_done_state(state):
+        return isinstance(state, str) and state.endswith("done")
+
     def _send_task_error_alert(self, title: str, message: str):
         self.ensure_one()
         try:
@@ -133,10 +137,22 @@ class ProjectTask(models.Model):
             
             # Handle both Odoo 16 and 17 field names if possible, but prioritize 17
             for move in picking.move_ids:
-                if hasattr(move, 'quantity'): # Odoo 17+
-                    move.quantity = move.product_uom_qty
-                elif hasattr(move, 'quantity_done'): # Odoo 16
-                    move.quantity_done = move.product_uom_qty
+                qty_done = move.product_uom_qty or 0.0
+
+                # Prefer explicitly setting both known variants for compatibility across versions.
+                if hasattr(move, "quantity"):
+                    move.quantity = qty_done
+                if hasattr(move, "quantity_done"):
+                    move.quantity_done = qty_done
+
+                # Odoo 18 uses move lines for final done quantity in many flows.
+                for move_line in move.move_line_ids:
+                    if hasattr(move_line, "qty_done"):
+                        move_line.qty_done = qty_done
+                    elif hasattr(move_line, "quantity_done"):
+                        move_line.quantity_done = qty_done
+                    elif hasattr(move_line, "quantity"):
+                        move_line.quantity = qty_done
                 
                 if hasattr(move, 'picked'):
                     move.picked = True
@@ -168,7 +184,7 @@ class ProjectTask(models.Model):
     def create(self, vals_list):
         tasks = super().create(vals_list)
         for task in tasks:
-            if task.is_fulfillment_task and task.state in ['1_done', 'done'] and not task.fulfillment_inventory_deducted:
+            if task.is_fulfillment_task and self._is_done_state(task.state) and not task.fulfillment_inventory_deducted:
                 try:
                     task.action_fulfillment_deduct_inventory()
                 except Exception as e:
@@ -180,7 +196,7 @@ class ProjectTask(models.Model):
     def write(self, vals):
         res = super().write(vals)
         # Check if task is being marked as done
-        if 'state' in vals and vals['state'] in ['1_done', 'done']:
+        if 'state' in vals and self._is_done_state(vals["state"]):
              for task in self:
                   if task.is_fulfillment_task and not task.fulfillment_inventory_deducted:
                       try:
