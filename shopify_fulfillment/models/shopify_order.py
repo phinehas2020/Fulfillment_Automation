@@ -732,7 +732,8 @@ class ShopifyOrder(models.Model):
 
     def write(self, vals):
         tracked = None
-        if vals.get("state") == "error":
+        alert_state = vals.get("state")
+        if alert_state in ("error", "manual_required"):
             tracked = {order.id: order.state for order in self}
 
         res = super().write(vals)
@@ -740,13 +741,24 @@ class ShopifyOrder(models.Model):
         if tracked:
             alert_message = vals.get("error_message")
             for order in self:
-                if tracked.get(order.id) == "error":
+                previous_state = tracked.get(order.id)
+                if previous_state == alert_state:
                     continue
-                message = alert_message or order.error_message or "Order moved to error state."
+                if alert_state == "error":
+                    title = "Order Processing Error"
+                    fallback_message = "Order moved to error state."
+                else:
+                    title = "Order Requires Manual Review"
+                    fallback_message = "Order moved to Manual Review and was not shipped automatically."
+
+                message = alert_message or order.error_message or fallback_message
                 order._send_error_alert(
-                    title="Order Processing Error",
+                    title=title,
                     message=message,
-                    extra={"previous_state": tracked.get(order.id) or "-"},
+                    extra={
+                        "previous_state": previous_state or "-",
+                        "new_state": alert_state,
+                    },
                 )
 
         return res
