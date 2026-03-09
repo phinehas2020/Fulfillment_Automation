@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import unicodedata
+from html import escape
 from typing import Optional
 
 from odoo import api, exceptions, fields, models
@@ -220,31 +221,151 @@ class ShopifyOrder(models.Model):
         _logger.info("Created sale order %s for Shopify order %s", sale_order.name, self.order_name)
         return sale_order
 
+    @staticmethod
+    def _join_customer_name(first_name, last_name):
+        parts = [str(part).strip() for part in (first_name, last_name) if part and str(part).strip()]
+        return " ".join(parts).strip()
+
+    @staticmethod
+    def _extract_customer_name_from_payload(payload: dict):
+        payload = payload or {}
+        customer = payload.get("customer") or {}
+        address_sources = [
+            payload.get("shipping_address") or {},
+            payload.get("billing_address") or {},
+            customer.get("default_address") or {},
+            customer,
+        ]
+
+        for source in address_sources:
+            full_name = (source.get("name") or "").strip()
+            if full_name:
+                return full_name
+
+            joined = ShopifyOrder._join_customer_name(
+                source.get("first_name"),
+                source.get("last_name"),
+            )
+            if joined:
+                return joined
+
+        email = (payload.get("email") or customer.get("email") or "").strip()
+        return email or False
+
+    def _get_customer_display_name(self):
+        self.ensure_one()
+
+        if (self.customer_name or "").strip():
+            return self.customer_name.strip()
+
+        payload = {}
+        if self.raw_payload:
+            try:
+                payload = json.loads(self.raw_payload)
+            except Exception:
+                _logger.debug("Order %s has invalid raw payload JSON for customer-name fallback", self.id)
+
+        payload_name = self._extract_customer_name_from_payload(payload)
+        if payload_name:
+            return payload_name
+
+        if (self.email or "").strip():
+            return self.email.strip()
+
+        return "Unknown Customer"
+
+    def _get_fulfillment_task_title(self):
+        self.ensure_one()
+        return self._get_customer_display_name()
+
+    def _get_fulfillment_task_description(self):
+        self.ensure_one()
+
+        order_reference = self.order_name or self.order_number or self.shopify_id or ""
+        parts = []
+        if order_reference:
+            parts.append(f"<p><strong>Order:</strong> {escape(str(order_reference))}</p>")
+
+        parts.append("<ul>")
+        for line in self.line_ids:
+            if not line.requires_shipping:
+                continue
+
+            sku = escape(line.sku or "NO SKU")
+            title = escape(line.title or "Untitled Item")
+            parts.append(f"<li>[{sku}] <b>{title}</b> x{line.quantity}</li>")
+        parts.append("</ul>")
+
+        return "".join(parts)
+
+    def _get_default_fulfillment_user_ids(self):
+        self.ensure_one()
+
+        default_user_id_raw = self.env["ir.config_parameter"].sudo().get_param("fulfillment.default_user_id")
+        if not default_user_id_raw:
+            return []
+
+        try:
+            return [int(default_user_id_raw)]
+        except (TypeError, ValueError):
+            _logger.warning("Invalid fulfillment.default_user_id value: %s", default_user_id_raw)
+            return []
+
+    def _should_refresh_fulfillment_task_name(self, current_name, target_name):
+        self.ensure_one()
+
+        current_name = (current_name or "").strip()
+        target_name = (target_name or "").strip()
+        if not target_name or current_name == target_name:
+            return False
+        if not current_name:
+            return True
+
+        order_reference = (self.order_name or self.order_number or "").strip()
+        legacy_names = {
+            order_reference,
+            f"Pack Order {order_reference}".strip(),
+            f"Inventory Deduction (Manual) - {order_reference}".strip(),
+        }
+        return current_name in legacy_names
+
+    def ensure_fulfillment_task(self, state=None):
+        self.ensure_one()
+
+        Task = self.env["project.task"]
+        existing = Task.search(
+            [("shopify_order_id", "=", self.id), ("is_fulfillment_task", "=", True)],
+            limit=1,
+        )
+        target_name = self._get_fulfillment_task_title()
+        target_description = self._get_fulfillment_task_description()
+
+        if existing:
+            updates = {}
+            if self._should_refresh_fulfillment_task_name(existing.name, target_name):
+                updates["name"] = target_name
+            if not existing.description and target_description:
+                updates["description"] = target_description
+            if updates:
+                existing.write(updates)
+            return existing
+
+        vals = {
+            "name": target_name,
+            "description": target_description,
+            "user_ids": [(6, 0, self._get_default_fulfillment_user_ids())],
+            "shopify_order_id": self.id,
+            "is_fulfillment_task": True,
+        }
+        if state:
+            vals["state"] = state
+
+        return Task.create(vals)
+
     def action_create_fulfillment_task(self):
         """Manually create a fulfillment task for this order."""
         self.ensure_one()
-        Task = self.env["project.task"]
-        existing = Task.search([("shopify_order_id", "=", self.id), ("is_fulfillment_task", "=", True)], limit=1)
-        if existing:
-            raise exceptions.UserError("A fulfillment task already exists for this order.")
-
-        ICP = self.env["ir.config_parameter"].sudo()
-        default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
-        user_ids = [int(default_user_id_raw)] if default_user_id_raw else []
-
-        description = "<ul>"
-        for line in self.line_ids:
-            if line.requires_shipping:
-                description += f"<li>[{line.sku or 'NO SKU'}] <b>{line.title}</b> x{line.quantity}</li>"
-        description += "</ul>"
-
-        task = Task.create({
-            "name": f"Pack Order {self.order_name or self.order_number}",
-            "description": description,
-            "user_ids": [(6, 0, user_ids)],
-            "shopify_order_id": self.id,
-            "is_fulfillment_task": True,
-        })
+        task = self.ensure_fulfillment_task()
         return {
             "type": "ir.actions.act_window",
             "res_model": "project.task",
@@ -263,18 +384,7 @@ class ShopifyOrder(models.Model):
         task = Task.search([("shopify_order_id", "=", self.id), ("is_fulfillment_task", "=", True)], limit=1)
         
         if not task:
-            # Create a silent fulfillment task to perform the deduction
-            ICP = self.env["ir.config_parameter"].sudo()
-            default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
-            user_ids = [int(default_user_id_raw)] if default_user_id_raw else []
-            
-            task = Task.create({
-                "name": f"Inventory Deduction (Manual) - {self.order_name}",
-                "shopify_order_id": self.id,
-                "is_fulfillment_task": True,
-                "user_ids": [(6, 0, user_ids)],
-                "state": "1_done", # Mark as done immediately
-            })
+            task = self.ensure_fulfillment_task(state="1_done")
             # The write override in project_task should trigger action_fulfillment_deduct_inventory
         else:
             # Trigger it manually on the existing task
@@ -642,7 +752,7 @@ class ShopifyOrder(models.Model):
             "order_number": payload.get("order_number"),
             "order_name": payload.get("name"),
             "email": payload.get("email"),
-            "customer_name": f"{shipping.get('first_name', '')} {shipping.get('last_name', '')}".strip(),
+            "customer_name": self._extract_customer_name_from_payload(payload),
             "shipping_address_line1": shipping_line1,
             "shipping_address_line2": shipping_line2,
             "shipping_city": shipping.get("city"),

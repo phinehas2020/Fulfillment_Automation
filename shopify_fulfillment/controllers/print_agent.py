@@ -128,34 +128,7 @@ class PrintAgentController(http.Controller):
 
         if success and job.order_id:
             # Create Project Task (Standard To-Do)
-            task_model = request.env["project.task"].sudo()
-            existing_task = task_model.search([("shopify_order_id", "=", job.order_id.id), ("is_fulfillment_task", "=", True)], limit=1)
-            
-            if not existing_task:
-                ICP = request.env["ir.config_parameter"].sudo()
-                default_user_id_raw = ICP.get_param("fulfillment.default_user_id")
-                # Ensure we have a valid user list
-                user_ids = [int(default_user_id_raw)] if default_user_id_raw else []
-
-                # Build description
-                description = "<ul>"
-                for line in job.order_id.line_ids:
-                    if line.requires_shipping:
-                        description += f"<li>[{line.sku or 'NO SKU'}] <b>{line.title}</b> x{line.quantity}</li>"
-                description += "</ul>"
-                
-                name = f"Pack Order {job.order_id.order_name or job.order_id.order_number}"
-                
-                vals = {
-                    "name": name,
-                    "description": description,
-                    "user_ids": [(6, 0, user_ids)],
-                    "shopify_order_id": job.order_id.id,
-                    "is_fulfillment_task": True,
-                    # Assign to no project (Private Task) or a Default Project if configured?
-                    # Standard "To-do" app shows tasks with no project if assigned to user
-                }
-                new_task = task_model.create(vals)
+            job.order_id.sudo().ensure_fulfillment_task()
 
             # Mark order shipped if all jobs completed
             remaining = job.order_id.print_job_ids.filtered(lambda j: j.state != "completed")

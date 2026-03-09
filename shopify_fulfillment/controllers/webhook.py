@@ -94,6 +94,7 @@ class ShopifyWebhookController(http.Controller):
         return hmac.compare_digest(computed, signature)
 
     def _prepare_order_vals(self, payload: dict):
+        order_model = request.env["shopify.order"]
         shipping = payload.get("shipping_address") or {}
         shipping_line1, shipping_line2 = normalize_address_lines(
             shipping.get("address1"),
@@ -134,7 +135,7 @@ class ShopifyWebhookController(http.Controller):
             "order_number": payload.get("order_number"),
             "order_name": payload.get("name"),
             "email": payload.get("email"),
-            "customer_name": f"{shipping.get('first_name', '')} {shipping.get('last_name', '')}".strip(),
+            "customer_name": order_model._extract_customer_name_from_payload(payload),
             "shipping_address_line1": shipping_line1,
             "shipping_address_line2": shipping_line2,
             "shipping_city": shipping.get("city"),
