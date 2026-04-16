@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_fulfillment_rate_audit_list" model="ir.ui.view">
+        <field name="name">fulfillment.rate.audit.list</field>
+        <field name="model">fulfillment.rate.audit</field>
+        <field name="arch" type="xml">
+            <list create="false" edit="false" delete="false" default_order="purchased_at desc">
+                <field name="purchased_at"/>
+                <field name="order_id"/>
+                <field name="box_sequence"/>
+                <field name="dest_city"/>
+                <field name="dest_state"/>
+                <field name="dest_zip"/>
+                <field name="is_residential" widget="badge"/>
+                <field name="weight_grams"/>
+                <field name="selected_carrier"/>
+                <field name="selected_service"/>
+                <field name="selected_amount" sum="Total Paid"/>
+                <field name="rate_1_carrier" string="#1"/>
+                <field name="rate_1_amount" string="#1 $"/>
+                <field name="rate_2_carrier" string="#2"/>
+                <field name="rate_2_amount" string="#2 $"/>
+                <field name="rate_3_carrier" string="#3"/>
+                <field name="rate_3_amount" string="#3 $"/>
+                <field name="delta_vs_cheapest" sum="Total Overpaid"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_fulfillment_rate_audit_search" model="ir.ui.view">
+        <field name="name">fulfillment.rate.audit.search</field>
+        <field name="model">fulfillment.rate.audit</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="order_id"/>
+                <field name="dest_zip"/>
+                <field name="dest_state"/>
+                <field name="selected_carrier"/>
+                <field name="selected_service"/>
+                <filter string="Residential" name="filter_residential" domain="[('is_residential', '=', 'yes')]"/>
+                <filter string="Commercial" name="filter_commercial" domain="[('is_residential', '=', 'no')]"/>
+                <filter string="Overpaid vs Cheapest" name="filter_overpaid" domain="[('delta_vs_cheapest', '>', 0.0)]"/>
+                <filter string="Last 7 Days" name="filter_last_week"
+                        domain="[('purchased_at', '>=', (context_today() - datetime.timedelta(days=7)).strftime('%Y-%m-%d'))]"/>
+                <filter string="Last 30 Days" name="filter_last_month"
+                        domain="[('purchased_at', '>=', (context_today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d'))]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Carrier" name="group_carrier" context="{'group_by': 'selected_carrier'}"/>
+                    <filter string="Service" name="group_service" context="{'group_by': 'selected_service'}"/>
+                    <filter string="Address Type" name="group_residential" context="{'group_by': 'is_residential'}"/>
+                    <filter string="Destination State" name="group_state" context="{'group_by': 'dest_state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_fulfillment_rate_audit_form" model="ir.ui.view">
+        <field name="name">fulfillment.rate.audit.form</field>
+        <field name="model">fulfillment.rate.audit</field>
+        <field name="arch" type="xml">
+            <form create="false" edit="false" delete="false">
+                <sheet>
+                    <group>
+                        <group string="Shipment">
+                            <field name="purchased_at"/>
+                            <field name="order_id"/>
+                            <field name="shipment_id"/>
+                            <field name="box_sequence"/>
+                            <field name="weight_grams"/>
+                        </group>
+                        <group string="Destination">
+                            <field name="dest_city"/>
+                            <field name="dest_state"/>
+                            <field name="dest_zip"/>
+                            <field name="is_residential"/>
+                        </group>
+                    </group>
+                    <group string="Selected Rate">
+                        <group>
+                            <field name="selected_carrier"/>
+                            <field name="selected_service"/>
+                        </group>
+                        <group>
+                            <field name="selected_amount"/>
+                            <field name="selected_currency"/>
+                            <field name="delta_vs_cheapest"/>
+                        </group>
+                    </group>
+                    <group string="Top 3 Cheapest Rates Available">
+                        <group>
+                            <field name="rate_1_carrier"/>
+                            <field name="rate_1_service"/>
+                            <field name="rate_1_amount"/>
+                        </group>
+                        <group>
+                            <field name="rate_2_carrier"/>
+                            <field name="rate_2_service"/>
+                            <field name="rate_2_amount"/>
+                        </group>
+                        <group>
+                            <field name="rate_3_carrier"/>
+                            <field name="rate_3_service"/>
+                            <field name="rate_3_amount"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_fulfillment_rate_audit" model="ir.actions.act_window">
+        <field name="name">Rate Audit</field>
+        <field name="res_model">fulfillment.rate.audit</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_fulfillment_rate_audit_search"/>
+        <field name="context">{"search_default_filter_last_week": 1}</field>
+    </record>
+</odoo>

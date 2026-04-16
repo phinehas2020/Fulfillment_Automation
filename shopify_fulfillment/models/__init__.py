@@ -3,6 +3,7 @@ from . import fulfillment_shipment  # noqa: F401
 from . import fulfillment_shipment_group  # noqa: F401
 from . import print_job  # noqa: F401
 from . import recent_shipment  # noqa: F401
+from . import fulfillment_rate_audit  # noqa: F401
 from . import print_test_wizard  # noqa: F401
 from . import shopify_order  # noqa: F401
 from . import shopify_order_line  # noqa: F401

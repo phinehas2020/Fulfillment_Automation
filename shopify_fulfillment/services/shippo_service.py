@@ -75,6 +75,7 @@ class ShippoService:
             "country": order.shipping_country or "US",
             "phone": sanitize_phone(order.shipping_phone),
             "email": order.email or "no-reply@example.com",
+            "validate": True,
         }
 
         address_from = {
@@ -158,7 +159,11 @@ class ShippoService:
             sender_company: res.company record (sender address)
 
         Returns:
-            List of rate objects from Shippo
+            Tuple of (rates, meta):
+                rates: list of rate objects from Shippo
+                meta: dict with keys:
+                    - is_residential: bool | None (from Shippo address validation)
+                    - validation_results: dict | None (raw Shippo validation output)
         """
         url = f"{self.API_URL}/shipments"
 
@@ -182,6 +187,7 @@ class ShippoService:
             "country": order.shipping_country or "US",
             "phone": sanitize_phone(order.shipping_phone),
             "email": order.email or "no-reply@example.com",
+            "validate": True,
         }
 
         address_from = {
@@ -232,13 +238,19 @@ class ShippoService:
 
             if resp.status_code >= 400:
                 _logger.error("Shippo Error: %s", resp.text)
-                return []
+                return [], {"is_residential": None, "validation_results": None}
 
             data = resp.json()
             rates = data.get("rates", [])
             messages = data.get("messages", [])
+            meta = self._extract_address_meta(data.get("address_to"))
 
-            _logger.info("Shippo: Got %d rates for box %s", len(rates), box.name)
+            _logger.info(
+                "Shippo: Got %d rates for box %s (is_residential=%s)",
+                len(rates),
+                box.name,
+                meta.get("is_residential"),
+            )
             if messages:
                 _logger.warning("Shippo messages: %s", messages)
             if rates:
@@ -250,10 +262,20 @@ class ShippoService:
                         r.get("amount"),
                     )
 
-            return rates
+            return rates, meta
         except Exception as e:
             _logger.exception("Failed to connect to Shippo: %s", e)
-            return []
+            return [], {"is_residential": None, "validation_results": None}
+
+    @staticmethod
+    def _extract_address_meta(address_obj):
+        """Pull the residential flag out of a Shippo-validated address."""
+        if not isinstance(address_obj, dict):
+            return {"is_residential": None, "validation_results": None}
+        return {
+            "is_residential": address_obj.get("is_residential"),
+            "validation_results": address_obj.get("validation_results"),
+        }
 
     def get_recent_transactions(self, limit: int = 20):
         """Fetch recent label transactions from Shippo."""

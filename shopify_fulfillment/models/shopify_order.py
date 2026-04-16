@@ -1136,9 +1136,11 @@ class ShopifyOrder(models.Model):
 
         shipment_vals = None
 
+        shippo_meta = {"is_residential": None, "validation_results": None}
+
         if shippo:
             # Get rates for this specific box with its weight
-            rates = shippo.get_rates_for_box(
+            rates, shippo_meta = shippo.get_rates_for_box(
                 order=self,
                 box=box_record,
                 total_weight_grams=packed_box.total_weight_with_box,
@@ -1200,8 +1202,9 @@ class ShopifyOrder(models.Model):
                             ups_rate.get("amount")
                         )
                         shipment_vals = shippo.purchase_label(ups_rate)
-                        
+
                         if shipment_vals and not shipment_vals.get("error"):
+                            selected_rate = ups_rate
                             _logger.info(
                                 "Order %s Box %d: UPS fallback successful!",
                                 self.id, sequence
@@ -1218,6 +1221,7 @@ class ShopifyOrder(models.Model):
             if not rates:
                 raise exceptions.UserError(f"Box {sequence}: Mock API returned no rates")
             cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
+            selected_rate = cheapest
             shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
 
         if not shipment_vals:
@@ -1253,6 +1257,25 @@ class ShopifyOrder(models.Model):
             "zpl_data": shipment.label_zpl or "",
             "printer_id": False,
         })
+
+        # Log rate audit row (top-3 cheapest vs. selected) for weekly review.
+        try:
+            self.env["fulfillment.rate.audit"].sudo().log_purchase(
+                order=self,
+                shipment=shipment,
+                group=group,
+                sequence=sequence,
+                weight_grams=packed_box.total_weight_with_box,
+                rates=rates,
+                selected_rate=selected_rate,
+                is_residential=shippo_meta.get("is_residential") if shippo else None,
+            )
+        except Exception:
+            _logger.exception(
+                "Order %s Box %d: Failed to write rate audit row (continuing)",
+                self.id,
+                sequence,
+            )
 
         _logger.info(
             "Order %s Box %d: Shipment created - %s %s",
