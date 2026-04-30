@@ -214,6 +214,39 @@ class ShopifyAPI:
             _logger.warning("Error fetching variant %s: %s", variant_id, e)
         return None
 
+    @staticmethod
+    def _truthy_metafield_value(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    @staticmethod
+    def _normalized_metafield_key(value: str) -> str:
+        return "".join(ch for ch in (value or "").lower() if ch.isalnum())
+
+    def product_has_true_metafield(self, product_id: str, metafield_key: str) -> bool:
+        """Return True when a product metafield exists and has a truthy value."""
+        if not product_id:
+            return False
+
+        target_key = self._normalized_metafield_key(metafield_key)
+        url = self._url(f"/products/{product_id}/metafields.json?limit=250")
+        resp = requests.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code >= 400:
+            raise exceptions.UserError(
+                f"Product metafield lookup failed for product {product_id}: {resp.text}"
+            )
+
+        for metafield in resp.json().get("metafields", []):
+            key = metafield.get("key")
+            if self._normalized_metafield_key(key) != target_key:
+                continue
+            return self._truthy_metafield_value(metafield.get("value"))
+
+        return False
+
     def get_variant_inventory_item_id(self, variant_id: str) -> str:
         """Fetch the inventory item ID for a Shopify variant."""
         variant = self.get_product_variant(variant_id)

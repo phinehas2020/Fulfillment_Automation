@@ -612,6 +612,16 @@ class ShopifyOrder(models.Model):
         sync_rows = []
 
         for line in self.line_ids:
+            try:
+                if api.product_has_true_metafield(line.shopify_product_id, "baked_goods"):
+                    skipped_lines.append(
+                        f"{self._format_pos_line_for_error(line)}: baked goods product"
+                    )
+                    continue
+            except Exception as exc:  # pylint: disable=broad-except
+                preflight_errors.append(f"{self._format_pos_line_for_error(line)}: {exc}")
+                continue
+
             if not line.shopify_variant_id:
                 if not line.sku and not line.shopify_product_id:
                     skipped_lines.append(self._format_pos_line_for_error(line))
@@ -658,14 +668,14 @@ class ShopifyOrder(models.Model):
             message = "POS inventory sync blocked. No Odoo stock was changed:\n"
             message += "\n".join(f"- {error}" for error in preflight_errors)
             if skipped_lines:
-                message += "\n\nSkipped non-product/custom lines:\n"
+                message += "\n\nSkipped ignored lines:\n"
                 message += "\n".join(f"- {line}" for line in skipped_lines)
             return self._mark_pos_inventory_sync_manual_required(message)
 
         if not sync_rows:
             summary = "POS inventory sync completed: no syncable Shopify product lines found."
             if skipped_lines:
-                summary += "\nSkipped non-product/custom lines:\n"
+                summary += "\nSkipped ignored lines:\n"
                 summary += "\n".join(f"- {line}" for line in skipped_lines)
             self.write(
                 {
@@ -718,7 +728,7 @@ class ShopifyOrder(models.Model):
             )
 
         if skipped_lines:
-            summary_lines.append("Skipped non-product/custom lines: " + ", ".join(skipped_lines))
+            summary_lines.append("Skipped ignored lines: " + ", ".join(skipped_lines))
 
         summary = "POS inventory sync completed:\n" + "\n".join(f"- {line}" for line in summary_lines)
         self.write(
