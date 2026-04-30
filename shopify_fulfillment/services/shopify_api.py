@@ -5,6 +5,7 @@ import hmac
 import logging
 from hashlib import sha256
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 import requests
 from odoo import exceptions
@@ -212,6 +213,62 @@ class ShopifyAPI:
         except Exception as e:
             _logger.warning("Error fetching variant %s: %s", variant_id, e)
         return None
+
+    def get_variant_inventory_item_id(self, variant_id: str) -> str:
+        """Fetch the inventory item ID for a Shopify variant."""
+        variant = self.get_product_variant(variant_id)
+        if not variant:
+            raise exceptions.UserError(f"Shopify variant {variant_id} was not found.")
+
+        inventory_item_id = variant.get("inventory_item_id")
+        if not inventory_item_id:
+            raise exceptions.UserError(
+                f"Shopify variant {variant_id} does not have an inventory item ID."
+            )
+        return str(inventory_item_id)
+
+    def get_inventory_level(self, inventory_item_id: str, location_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch an inventory level by inventory item and Shopify location."""
+        params = urlencode(
+            {
+                "inventory_item_ids": inventory_item_id,
+                "location_ids": location_id,
+            }
+        )
+        url = self._url(f"/inventory_levels.json?{params}")
+        resp = requests.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code >= 400:
+            raise exceptions.UserError(
+                f"Inventory level lookup failed for item {inventory_item_id} "
+                f"at location {location_id}: {resp.text}"
+            )
+
+        levels = resp.json().get("inventory_levels", [])
+        return levels[0] if levels else None
+
+    def get_available_inventory_quantity(self, inventory_item_id: str, location_id: str) -> float:
+        """Return Shopify's available quantity for an item at a location."""
+        level = self.get_inventory_level(inventory_item_id, location_id)
+        if not level:
+            raise exceptions.UserError(
+                f"No Shopify inventory level found for item {inventory_item_id} "
+                f"at location {location_id}."
+            )
+
+        available = level.get("available")
+        if available is None:
+            raise exceptions.UserError(
+                f"Shopify inventory level for item {inventory_item_id} "
+                f"at location {location_id} has no available quantity."
+            )
+
+        try:
+            return float(available)
+        except (TypeError, ValueError) as exc:
+            raise exceptions.UserError(
+                f"Invalid Shopify available quantity for item {inventory_item_id}: {available}"
+            ) from exc
+
     def graphql_query(self, query: str) -> Dict[str, Any]:
         """Execute a GraphQL query."""
         url = self._url("/graphql.json")
@@ -297,4 +354,3 @@ class ShopifyAPI:
         except Exception as e:
             _logger.error("Failed to fetch risk level for %s: %s", shopify_order_id, e)
             return "LOW"
-

@@ -27,10 +27,12 @@
         <field name="arch" type="xml">
             <form string="Shopify Order">
                 <header>
-                    <button name="action_process" type="object" string="Process" invisible="state not in ('pending', 'error', 'manual_required')"/>
+                    <button name="action_process" type="object" string="Process" invisible="source == 'pos' or state not in ('pending', 'error', 'manual_required')"/>
                     <button name="action_reset_and_reprocess" type="object" string="Reset &amp; Reprocess" class="btn-secondary"
                             confirm="This will delete existing shipments/print jobs and repurchase labels. Continue?"
-                            invisible="state not in ('ready_to_ship', 'shipped', 'error', 'manual_required')"/>
+                            invisible="source == 'pos' or state not in ('ready_to_ship', 'shipped', 'error', 'manual_required')"/>
+                    <button name="action_retry_pos_inventory_sync" type="object" string="Retry POS Inventory Sync" class="oe_highlight"
+                            invisible="source != 'pos'"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
@@ -45,7 +47,12 @@
                         <field name="source"/>
                         <field name="created_at"/>
                     </group>
-                    <group string="Shipping">
+                    <group string="POS Inventory Sync" invisible="source != 'pos'">
+                        <field name="shopify_location_id" readonly="1"/>
+                        <field name="pos_inventory_synced_at" readonly="1"/>
+                        <field name="pos_inventory_sync_summary" readonly="1"/>
+                    </group>
+                    <group string="Shipping" invisible="source == 'pos'">
                         <field name="requested_shipping_method"/>
                         <field name="customer_name"/>
                         <field name="shipping_phone"/>
@@ -60,7 +67,14 @@
                         <page string="Lines">
                             <field name="line_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_shopify_order_line_inline_tree'}"/>
                         </page>
-                        <page string="Shipment">
+                        <page string="POS Sync" invisible="source != 'pos'">
+                            <group>
+                                <field name="shopify_location_id" readonly="1"/>
+                                <field name="pos_inventory_synced_at" readonly="1"/>
+                                <field name="pos_inventory_sync_summary" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Shipment" invisible="source == 'pos'">
                             <group>
                                 <group>
                                     <field name="box_count" string="Number of Boxes"/>
@@ -86,10 +100,10 @@
                                 </field>
                             </group>
                         </page>
-                        <page string="Print Jobs">
+                        <page string="Print Jobs" invisible="source == 'pos'">
                             <field name="print_job_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_print_job_tree'}"/>
                         </page>
-                        <page string="Inventory Status" name="inventory_status">
+                        <page string="Inventory Status" name="inventory_status" invisible="source == 'pos'">
                             <group>
                                 <group>
                                     <field name="inventory_deducted" widget="boolean_toggle" readonly="1"/>
@@ -133,6 +147,36 @@
         <field name="name">Shopify Orders</field>
         <field name="res_model">shopify.order</field>
         <field name="view_mode">list,form</field>
+        <field name="domain">[('source', '!=', 'pos')]</field>
+    </record>
+
+    <record id="view_shopify_pos_order_tree" model="ir.ui.view">
+        <field name="name">shopify.pos.order.list</field>
+        <field name="model">shopify.order</field>
+        <field name="arch" type="xml">
+            <list default_order="created_at desc, id desc">
+                <header>
+                    <button name="action_import_from_shopify" type="object" string="Sync Orders from Shopify" class="btn-primary"/>
+                    <button name="action_retry_pos_inventory_sync" type="object" string="Retry POS Inventory Sync"/>
+                </header>
+                <field name="order_name"/>
+                <field name="state"/>
+                <field name="shopify_location_id"/>
+                <field name="pos_inventory_synced_at"/>
+                <field name="pos_inventory_sync_summary"/>
+                <field name="total_items"/>
+                <field name="created_at"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_shopify_pos_order_action" model="ir.actions.act_window">
+        <field name="name">POS Orders</field>
+        <field name="res_model">shopify.order</field>
+        <field name="view_mode">list,form</field>
+        <field name="view_id" ref="view_shopify_pos_order_tree"/>
+        <field name="domain">[('source', '=', 'pos')]</field>
+        <field name="context">{'default_source': 'pos'}</field>
     </record>
 
     <record id="action_sync_shopify_status_server" model="ir.actions.server">
@@ -165,6 +209,17 @@
         <field name="state">code</field>
         <field name="code">
             action = records.action_reset_and_reprocess()
+        </field>
+    </record>
+
+    <record id="action_retry_pos_inventory_sync_server" model="ir.actions.server">
+        <field name="name">Retry POS Inventory Sync</field>
+        <field name="model_id" ref="model_shopify_order"/>
+        <field name="binding_model_id" ref="model_shopify_order"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="state">code</field>
+        <field name="code">
+            action = records.action_retry_pos_inventory_sync()
         </field>
     </record>
 

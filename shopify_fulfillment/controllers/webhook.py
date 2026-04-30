@@ -40,15 +40,20 @@ class ShopifyWebhookController(http.Controller):
         try:
             payload = json.loads(raw_body.decode("utf-8"))
 
-            # Skip POS orders
-            if payload.get("source_name") == "pos":
-                _logger.info("Skipping POS order %s (source_name=pos)", payload.get("id"))
-                return {"status": "skipped", "reason": "pos_order"}
-
             order_model = request.env["shopify.order"].sudo()
+            source = order_model._source_from_payload(payload)
 
             existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
             if existing:
+                if source == "pos" or existing.source == "pos":
+                    order_vals = self._prepare_order_vals(payload)
+                    order_vals["line_ids"] = [(5, 0, 0)] + order_vals.get("line_ids", [])
+                    existing.write(order_vals)
+                    synced = existing._sync_pos_inventory_from_shopify()
+                    return {
+                        "status": "synced" if synced else "manual_required",
+                        "order_id": existing.id,
+                    }
                 return {"status": "duplicate", "order_id": existing.id}
 
             order_vals = self._prepare_order_vals(payload)
@@ -57,7 +62,20 @@ class ShopifyWebhookController(http.Controller):
             except IntegrityError:
                 request.env.cr.rollback()
                 existing = order_model.search([("shopify_id", "=", str(payload.get("id")))], limit=1)
+                if existing and (source == "pos" or existing.source == "pos"):
+                    synced = existing._sync_pos_inventory_from_shopify()
+                    return {
+                        "status": "synced" if synced else "manual_required",
+                        "order_id": existing.id,
+                    }
                 return {"status": "duplicate", "order_id": existing.id if existing else False}
+
+            if order.source == "pos":
+                synced = order._sync_pos_inventory_from_shopify()
+                return {
+                    "status": "synced" if synced else "manual_required",
+                    "order_id": order.id,
+                }
 
             # Create/update customer in Odoo database
             try:
@@ -119,7 +137,7 @@ class ShopifyWebhookController(http.Controller):
                     },
                 )
             )
-        source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
+        source = order_model._source_from_payload(payload)
         
         shipping_lines = payload.get("shipping_lines") or []
         requested_method = False
@@ -148,6 +166,7 @@ class ShopifyWebhookController(http.Controller):
             "line_ids": line_vals,
             "source": source,
             "requested_shipping_method": requested_method,
+            "shopify_location_id": order_model._shopify_location_id_from_payload(payload),
         }
 
     @staticmethod

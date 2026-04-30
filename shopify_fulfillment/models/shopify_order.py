@@ -51,13 +51,17 @@ class ShopifyOrder(models.Model):
             ("processing", "Processing"),
             ("ready_to_ship", "Ready to Ship"),
             ("shipped", "Shipped"),
+            ("inventory_synced", "Inventory Synced"),
             ("error", "Error"),
             ("manual_required", "Manual Review"),
         ],
         default="pending",
     )
     error_message = fields.Text()
-    source = fields.Selection([("shopify", "Shopify"), ("amazon", "Amazon")], default="shopify")
+    source = fields.Selection(
+        [("shopify", "Shopify"), ("amazon", "Amazon"), ("pos", "POS")],
+        default="shopify",
+    )
     line_ids = fields.One2many("shopify.order.line", "order_id", string="Order Lines")
     shipment_id = fields.Many2one("fulfillment.shipment", string="Shipment")
     print_job_ids = fields.One2many("print.job", "order_id", string="Print Jobs")
@@ -87,6 +91,9 @@ class ShopifyOrder(models.Model):
     created_at = fields.Datetime()
     raw_payload = fields.Text()
     requested_shipping_method = fields.Char(string="Requested Shipping Method")
+    shopify_location_id = fields.Char(string="Shopify Location ID", index=True)
+    pos_inventory_synced_at = fields.Datetime(string="POS Inventory Synced At", readonly=True)
+    pos_inventory_sync_summary = fields.Text(string="POS Inventory Sync Summary", readonly=True)
     shopify_risk_level = fields.Selection(
         [("HIGH", "High"), ("MEDIUM", "Medium"), ("LOW", "Low")], 
         string="Shopify Risk Level",
@@ -252,6 +259,22 @@ class ShopifyOrder(models.Model):
         email = (payload.get("email") or customer.get("email") or "").strip()
         return email or False
 
+    @staticmethod
+    def _source_from_payload(payload: dict):
+        payload = payload or {}
+        source_name = (payload.get("source_name") or "").lower()
+        tags = (payload.get("tags") or "").lower()
+        if source_name == "pos":
+            return "pos"
+        if source_name == "amazon" or "amazon" in tags:
+            return "amazon"
+        return "shopify"
+
+    @staticmethod
+    def _shopify_location_id_from_payload(payload: dict):
+        location_id = (payload or {}).get("location_id")
+        return str(location_id) if location_id else False
+
     def _get_customer_display_name(self):
         self.ensure_one()
 
@@ -409,11 +432,14 @@ class ShopifyOrder(models.Model):
         # Identify records that need syncing
         # We only sync records that have a shopify_id and are not already archived (though self should be active usually)
         # We process in batches
-        records_to_sync = self.filtered(lambda r: r.shopify_id and r.active)
+        records_to_sync = self.filtered(lambda r: r.shopify_id and r.active and r.source != "pos")
         if not records_to_sync:
             return
 
-        api = self._get_shopify_api()
+        try:
+            api = self._get_shopify_api()
+        except Exception as exc:  # pylint: disable=broad-except
+            return self._mark_pos_inventory_sync_manual_required(str(exc))
         
         # Batch by 50
         batch_size = 50
@@ -459,6 +485,252 @@ class ShopifyOrder(models.Model):
         from ..services.shopify_api import ShopifyAPI
 
         return ShopifyAPI.from_env(self.env)
+
+    def _payload_dict(self):
+        self.ensure_one()
+        if not self.raw_payload:
+            return {}
+        try:
+            return json.loads(self.raw_payload)
+        except Exception:
+            _logger.warning("Order %s has invalid raw payload JSON", self.id)
+            return {}
+
+    def _get_shopify_pos_location_id(self):
+        self.ensure_one()
+        payload_location_id = self._shopify_location_id_from_payload(self._payload_dict())
+        return (self.shopify_location_id or payload_location_id or "").strip()
+
+    def _find_odoo_product_by_sku(self, sku: str):
+        sku = (sku or "").strip()
+        if not sku:
+            return self.env["product.product"]
+
+        Product = self.env["product.product"].sudo()
+        product = Product.search([("default_code", "=", sku)], limit=1)
+        if not product:
+            product = Product.search([("default_code", "=ilike", sku)], limit=1)
+        if not product:
+            product = Product.search([("product_tmpl_id.default_code", "=", sku)], limit=1)
+        if not product:
+            product = Product.search([("product_tmpl_id.default_code", "=ilike", sku)], limit=1)
+        return product
+
+    def _get_configured_stock_location(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        location_id_raw = ICP.get_param("fulfillment.stock_location_id")
+        if not location_id_raw:
+            raise exceptions.UserError("Please configure a Source Stock Location in Shopify Settings first.")
+
+        try:
+            location_id = int(location_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise exceptions.UserError(
+                f"Configured Source Stock Location is invalid: {location_id_raw}"
+            ) from exc
+
+        location = self.env["stock.location"].sudo().browse(location_id)
+        if not location.exists():
+            raise exceptions.UserError("Configured Source Stock Location was not found.")
+        return location
+
+    def _get_exact_available_quantity(self, product, location):
+        Quant = self.env["stock.quant"].sudo()
+        try:
+            return Quant._get_available_quantity(product, location, strict=True)
+        except TypeError:
+            return product.sudo().with_context(location=location.id).qty_available
+
+    def _set_exact_available_quantity(self, product, location, target_qty):
+        Quant = self.env["stock.quant"].sudo()
+        current_qty = self._get_exact_available_quantity(product, location)
+        delta = target_qty - current_qty
+        if delta:
+            Quant._update_available_quantity(product, location, delta)
+        return current_qty, target_qty
+
+    @staticmethod
+    def _format_pos_line_for_error(line):
+        sku = (line.sku or "NO SKU").strip()
+        title = (line.title or line.variant_title or "Untitled item").strip()
+        return f"{sku} - {title}"
+
+    def _mark_pos_inventory_sync_manual_required(self, message: str):
+        self.ensure_one()
+        self.write(
+            {
+                "state": "manual_required",
+                "error_message": message,
+                "pos_inventory_sync_summary": message,
+                "pos_inventory_synced_at": False,
+            }
+        )
+        _logger.warning("POS inventory sync blocked for order %s: %s", self.order_name, message)
+        return False
+
+    def action_retry_pos_inventory_sync(self):
+        """Manual retry for POS orders after fixing missing products or config."""
+        synced_count = 0
+        for order in self:
+            if order.source != "pos":
+                continue
+            if order._sync_pos_inventory_from_shopify():
+                synced_count += 1
+
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": "POS Inventory Sync",
+                "message": f"Synced {synced_count} POS order(s).",
+                "type": "success" if synced_count else "warning",
+                "sticky": False,
+            },
+        }
+
+    def _sync_pos_inventory_from_shopify(self):
+        self.ensure_one()
+        if self.source != "pos":
+            raise exceptions.UserError("POS inventory sync can only run on POS orders.")
+
+        shopify_location_id = self._get_shopify_pos_location_id()
+        if not shopify_location_id:
+            return self._mark_pos_inventory_sync_manual_required(
+                "POS inventory sync blocked: Shopify order has no location_id."
+            )
+
+        self.shopify_location_id = shopify_location_id
+
+        try:
+            stock_location = self._get_configured_stock_location()
+        except exceptions.UserError as exc:
+            return self._mark_pos_inventory_sync_manual_required(str(exc))
+
+        api = self._get_shopify_api()
+        preflight_errors = []
+        skipped_lines = []
+        sync_rows = []
+
+        for line in self.line_ids:
+            if not line.shopify_variant_id:
+                if not line.sku and not line.shopify_product_id:
+                    skipped_lines.append(self._format_pos_line_for_error(line))
+                    continue
+                preflight_errors.append(
+                    f"{self._format_pos_line_for_error(line)}: missing Shopify variant ID"
+                )
+                continue
+
+            sku = (line.sku or "").strip()
+            if not sku:
+                preflight_errors.append(
+                    f"{self._format_pos_line_for_error(line)}: missing SKU for Odoo product match"
+                )
+                continue
+
+            product = self._find_odoo_product_by_sku(sku)
+            if not product:
+                preflight_errors.append(
+                    f"{self._format_pos_line_for_error(line)}: no matching Odoo product"
+                )
+                continue
+
+            try:
+                inventory_item_id = api.get_variant_inventory_item_id(line.shopify_variant_id)
+                available_qty = api.get_available_inventory_quantity(
+                    inventory_item_id,
+                    shopify_location_id,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                preflight_errors.append(f"{self._format_pos_line_for_error(line)}: {exc}")
+                continue
+
+            sync_rows.append(
+                {
+                    "line": line,
+                    "product": product,
+                    "inventory_item_id": inventory_item_id,
+                    "available_qty": available_qty,
+                }
+            )
+
+        if preflight_errors:
+            message = "POS inventory sync blocked. No Odoo stock was changed:\n"
+            message += "\n".join(f"- {error}" for error in preflight_errors)
+            if skipped_lines:
+                message += "\n\nSkipped non-product/custom lines:\n"
+                message += "\n".join(f"- {line}" for line in skipped_lines)
+            return self._mark_pos_inventory_sync_manual_required(message)
+
+        if not sync_rows:
+            summary = "POS inventory sync completed: no syncable Shopify product lines found."
+            if skipped_lines:
+                summary += "\nSkipped non-product/custom lines:\n"
+                summary += "\n".join(f"- {line}" for line in skipped_lines)
+            self.write(
+                {
+                    "state": "inventory_synced",
+                    "error_message": False,
+                    "pos_inventory_sync_summary": summary,
+                    "pos_inventory_synced_at": fields.Datetime.now(),
+                }
+            )
+            return True
+
+        updates_by_product = {}
+        for row in sync_rows:
+            product = row["product"]
+            existing = updates_by_product.get(product.id)
+            if existing and existing["available_qty"] != row["available_qty"]:
+                preflight_errors.append(
+                    "%s: multiple Shopify variants map to %s with conflicting quantities (%s vs %s)"
+                    % (
+                        self._format_pos_line_for_error(row["line"]),
+                        product.display_name,
+                        existing["available_qty"],
+                        row["available_qty"],
+                    )
+                )
+                continue
+
+            updates_by_product[product.id] = {
+                "product": product,
+                "available_qty": row["available_qty"],
+                "lines": (existing["lines"] if existing else []) + [row["line"]],
+            }
+
+        if preflight_errors:
+            message = "POS inventory sync blocked. No Odoo stock was changed:\n"
+            message += "\n".join(f"- {error}" for error in preflight_errors)
+            return self._mark_pos_inventory_sync_manual_required(message)
+
+        summary_lines = []
+        for update in updates_by_product.values():
+            product = update["product"]
+            target_qty = update["available_qty"]
+            old_qty, new_qty = self._set_exact_available_quantity(product, stock_location, target_qty)
+            line_refs = ", ".join(
+                str(line.sku or line.title or line.shopify_variant_id or "line").strip()
+                for line in update["lines"]
+            )
+            summary_lines.append(
+                f"{product.display_name}: {old_qty:g} -> {new_qty:g} at {stock_location.display_name} ({line_refs})"
+            )
+
+        if skipped_lines:
+            summary_lines.append("Skipped non-product/custom lines: " + ", ".join(skipped_lines))
+
+        summary = "POS inventory sync completed:\n" + "\n".join(f"- {line}" for line in summary_lines)
+        self.write(
+            {
+                "state": "inventory_synced",
+                "error_message": False,
+                "pos_inventory_sync_summary": summary,
+                "pos_inventory_synced_at": fields.Datetime.now(),
+            }
+        )
+        _logger.info("POS inventory sync completed for order %s", self.order_name)
+        return True
 
     @api.depends("line_ids.weight", "line_ids.quantity")
     def _compute_totals(self):
@@ -644,21 +916,29 @@ class ShopifyOrder(models.Model):
         _logger.info("Found %d unfulfilled orders in Shopify", len(shopify_orders))
         
         imported_count = 0
+        pos_synced_count = 0
         skipped_count = 0
         error_count = 0
         
         for order_data in shopify_orders:
             shopify_id = str(order_data.get("id"))
-            
-            # Skip POS orders
-            if order_data.get("source_name") == "pos":
-                _logger.debug("Skipping POS order %s", shopify_id)
-                skipped_count += 1
-                continue
+            source = self._source_from_payload(order_data)
             
             # Check if already exists
             existing = self.search([("shopify_id", "=", shopify_id)], limit=1)
             if existing:
+                if source == "pos" or existing.source == "pos":
+                    try:
+                        order_vals = self._prepare_order_vals_from_shopify(order_data)
+                        order_vals["line_ids"] = [(5, 0, 0)] + order_vals.get("line_ids", [])
+                        existing.write(order_vals)
+                        if existing._sync_pos_inventory_from_shopify():
+                            pos_synced_count += 1
+                    except Exception as e:
+                        _logger.exception("Failed to sync existing POS order %s: %s", shopify_id, e)
+                        error_count += 1
+                    continue
+
                 _logger.debug("Order %s already exists, skipping", shopify_id)
                 skipped_count += 1
                 continue
@@ -669,6 +949,11 @@ class ShopifyOrder(models.Model):
                 order = self.create(order_vals)
                 imported_count += 1
                 _logger.info("Imported order %s (%s)", order.order_name, shopify_id)
+
+                if order.source == "pos":
+                    if order._sync_pos_inventory_from_shopify():
+                        pos_synced_count += 1
+                    continue
                 
                 # Create/update customer in Odoo database
                 try:
@@ -687,7 +972,13 @@ class ShopifyOrder(models.Model):
                 _logger.exception("Failed to import order %s: %s", shopify_id, e)
                 error_count += 1
         
-        message = f"Shopify Sync Complete:\n• Imported: {imported_count}\n• Skipped (existing/POS): {skipped_count}\n• Errors: {error_count}"
+        message = (
+            "Shopify Sync Complete:\n"
+            f"Imported: {imported_count}\n"
+            f"POS inventory synced: {pos_synced_count}\n"
+            f"Skipped existing online orders: {skipped_count}\n"
+            f"Errors: {error_count}"
+        )
         _logger.info(message)
         
         return {
@@ -695,7 +986,7 @@ class ShopifyOrder(models.Model):
             'tag': 'display_notification',
             'params': {
                 'title': 'Shopify Sync Complete',
-                'message': f"Imported: {imported_count}, Skipped: {skipped_count}, Errors: {error_count}",
+                'message': f"Imported: {imported_count}, POS synced: {pos_synced_count}, Skipped: {skipped_count}, Errors: {error_count}",
                 'type': 'success' if error_count == 0 else 'warning',
                 'sticky': False,
             }
@@ -727,7 +1018,7 @@ class ShopifyOrder(models.Model):
                     },
                 )
             )
-        source = "amazon" if (payload.get("source_name") == "amazon" or "amazon" in (payload.get("tags") or "").lower()) else "shopify"
+        source = self._source_from_payload(payload)
         
         shipping_lines = payload.get("shipping_lines") or []
         requested_method = False
@@ -765,6 +1056,7 @@ class ShopifyOrder(models.Model):
             "line_ids": line_vals,
             "source": source,
             "requested_shipping_method": requested_method,
+            "shopify_location_id": self._shopify_location_id_from_payload(payload),
         }
 
     def action_process(self):
@@ -875,6 +1167,10 @@ class ShopifyOrder(models.Model):
 
     def _process_order_inner(self):
         self.ensure_one()
+
+        if self.source == "pos":
+            self._sync_pos_inventory_from_shopify()
+            return
 
         # Step 0: Risk Check
         if self._is_high_risk():
