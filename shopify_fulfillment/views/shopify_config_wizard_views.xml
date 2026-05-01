@@ -30,6 +30,7 @@
                             <field name="fulfillment_default_user_id"/>
                             <field name="fulfillment_risk_reviewer_id"/>
                             <field name="fulfillment_stock_location_id"/>
+                            <field name="fulfillment_pos_stock_location_id"/>
                         </group>
                     </group>
                 </sheet>

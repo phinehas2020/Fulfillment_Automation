@@ -534,6 +534,51 @@ class ShopifyOrder(models.Model):
             raise exceptions.UserError("Configured Source Stock Location was not found.")
         return location
 
+    def _get_configured_pos_stock_location(self):
+        ICP = self.env["ir.config_parameter"].sudo()
+        location_id_raw = ICP.get_param("fulfillment.pos_stock_location_id")
+        if location_id_raw:
+            try:
+                location_id = int(location_id_raw)
+            except (TypeError, ValueError) as exc:
+                raise exceptions.UserError(
+                    f"Configured POS Retail Stock Location is invalid: {location_id_raw}"
+                ) from exc
+
+            location = self.env["stock.location"].sudo().browse(location_id)
+            if location.exists():
+                return location
+            raise exceptions.UserError("Configured POS Retail Stock Location was not found.")
+
+        Warehouse = self.env["stock.warehouse"].sudo()
+        retail_warehouse = Warehouse.search([("name", "=ilike", "Retail")], limit=1)
+        if not retail_warehouse:
+            retail_warehouse = Warehouse.search([("name", "ilike", "Retail")], limit=1)
+        if retail_warehouse and retail_warehouse.lot_stock_id:
+            return retail_warehouse.lot_stock_id
+
+        Location = self.env["stock.location"].sudo()
+        retail_location = Location.search(
+            [
+                ("usage", "=", "internal"),
+                "|",
+                ("complete_name", "ilike", "HGR/Main Room"),
+                ("complete_name", "ilike", "Retail"),
+            ],
+            limit=1,
+        )
+        if not retail_location:
+            retail_location = Location.search(
+                [("usage", "=", "internal"), ("name", "=ilike", "Main Room")],
+                limit=1,
+            )
+        if retail_location:
+            return retail_location
+
+        raise exceptions.UserError(
+            "Please configure a POS Retail Stock Location in Shopify Settings first."
+        )
+
     def _get_exact_available_quantity(self, product, location):
         Quant = self.env["stock.quant"].sudo()
         try:
@@ -602,7 +647,7 @@ class ShopifyOrder(models.Model):
         self.shopify_location_id = shopify_location_id
 
         try:
-            stock_location = self._get_configured_stock_location()
+            stock_location = self._get_configured_pos_stock_location()
         except exceptions.UserError as exc:
             return self._mark_pos_inventory_sync_manual_required(str(exc))
 

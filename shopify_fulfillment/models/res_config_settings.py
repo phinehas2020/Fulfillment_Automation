@@ -39,7 +39,12 @@ class ResConfigSettings(models.TransientModel):
     )
     fulfillment_stock_location_id = fields.Many2one(
         'stock.location', 
-        string="Source Stock Location",
+        string="Online Fulfillment Source Location",
+        domain=[('usage', '=', 'internal')]
+    )
+    fulfillment_pos_stock_location_id = fields.Many2one(
+        'stock.location',
+        string="POS Retail Stock Location",
         domain=[('usage', '=', 'internal')]
     )
     fulfillment_risk_reviewer_id = fields.Many2one(
@@ -53,6 +58,7 @@ class ResConfigSettings(models.TransientModel):
         ICP = self.env['ir.config_parameter'].sudo()
         ICP.set_param('fulfillment.default_user_id', str(self.fulfillment_default_user_id.id or ''))
         ICP.set_param('fulfillment.stock_location_id', str(self.fulfillment_stock_location_id.id or ''))
+        ICP.set_param('fulfillment.pos_stock_location_id', str(self.fulfillment_pos_stock_location_id.id or ''))
         ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))
 
     @api.model
@@ -70,6 +76,7 @@ class ResConfigSettings(models.TransientModel):
         res.update({
             'fulfillment_default_user_id': _get_int('fulfillment.default_user_id'),
             'fulfillment_stock_location_id': _get_int('fulfillment.stock_location_id'),
+            'fulfillment_pos_stock_location_id': _get_int('fulfillment.pos_stock_location_id'),
             'fulfillment_risk_reviewer_id': _get_int('fulfillment.risk_reviewer_id'),
         })
         return res
