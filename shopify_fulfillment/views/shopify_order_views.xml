@@ -241,6 +241,7 @@
             <list editable="bottom">
                 <field name="sku"/>
                 <field name="title"/>
+                <field name="variant_title" string="Variant"/>
                 <field name="quantity"/>
                 <field name="weight"/>
                 <field name="requires_shipping"/>

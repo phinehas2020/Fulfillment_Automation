@@ -597,7 +597,10 @@ class ShopifyOrder(models.Model):
     @staticmethod
     def _format_pos_line_for_error(line):
         sku = (line.sku or "NO SKU").strip()
-        title = (line.title or line.variant_title or "Untitled item").strip()
+        title = (line.title or "Untitled item").strip()
+        variant_title = (line.variant_title or "").strip()
+        if variant_title and variant_title.lower() != "default title":
+            title = f"{title} / {variant_title}"
         return f"{sku} - {title}"
 
     def _mark_pos_inventory_sync_manual_required(self, message: str):
