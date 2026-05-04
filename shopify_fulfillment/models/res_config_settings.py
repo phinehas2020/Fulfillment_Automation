@@ -52,6 +52,18 @@ class ResConfigSettings(models.TransientModel):
         string="Risk Reviewer (Email Notification)",
         help="Employee to notify when an order is flagged as high risk or address issues."
     )
+    fulfillment_restock_project_id = fields.Many2one(
+        'project.project',
+        string="Restock Tasks Project",
+        help="Project where restock tasks are created. Defaults to 'Shopify Restock' if blank.",
+    )
+    fulfillment_restock_source_location_id = fields.Many2one(
+        'stock.location',
+        string="Restock Source Location",
+        domain=[('usage', '=', 'internal')],
+        help="Warehouse location to pull stock from when a restock task is marked done. "
+             "Falls back to the Online Fulfillment Source Location if blank.",
+    )
 
     def set_values(self):
         super().set_values()
@@ -60,12 +72,17 @@ class ResConfigSettings(models.TransientModel):
         ICP.set_param('fulfillment.stock_location_id', str(self.fulfillment_stock_location_id.id or ''))
         ICP.set_param('fulfillment.pos_stock_location_id', str(self.fulfillment_pos_stock_location_id.id or ''))
         ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))
+        ICP.set_param('fulfillment.restock_project_id', str(self.fulfillment_restock_project_id.id or ''))
+        ICP.set_param(
+            'fulfillment.restock_source_location_id',
+            str(self.fulfillment_restock_source_location_id.id or ''),
+        )
 
     @api.model
     def get_values(self):
         res = super().get_values()
         ICP = self.env['ir.config_parameter'].sudo()
-        
+
         def _get_int(key):
             val = ICP.get_param(key)
             try:
@@ -78,5 +95,9 @@ class ResConfigSettings(models.TransientModel):
             'fulfillment_stock_location_id': _get_int('fulfillment.stock_location_id'),
             'fulfillment_pos_stock_location_id': _get_int('fulfillment.pos_stock_location_id'),
             'fulfillment_risk_reviewer_id': _get_int('fulfillment.risk_reviewer_id'),
+            'fulfillment_restock_project_id': _get_int('fulfillment.restock_project_id'),
+            'fulfillment_restock_source_location_id': _get_int(
+                'fulfillment.restock_source_location_id'
+            ),
         })
         return res

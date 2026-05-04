@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_shopify_restock_item_tree" model="ir.ui.view">
+        <field name="name">shopify.restock.item.tree</field>
+        <field name="model">shopify.restock.item</field>
+        <field name="arch" type="xml">
+            <list string="Restock Items" decoration-success="inventory_transferred" decoration-muted="not is_active_snapshot">
+                <field name="create_date"/>
+                <field name="product_title"/>
+                <field name="variant_title"/>
+                <field name="sku"/>
+                <field name="current_qty"/>
+                <field name="restock_level"/>
+                <field name="restock_amount"/>
+                <field name="task_state"/>
+                <field name="todo_task_id"/>
+                <field name="source_pos_order_id"/>
+                <field name="is_active_snapshot"/>
+                <field name="inventory_transferred"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_shopify_restock_item_form" model="ir.ui.view">
+        <field name="name">shopify.restock.item.form</field>
+        <field name="model">shopify.restock.item</field>
+        <field name="arch" type="xml">
+            <form string="Restock Item">
+                <sheet>
+                    <group>
+                        <group string="Item">
+                            <field name="product_title"/>
+                            <field name="variant_title"/>
+                            <field name="sku"/>
+                            <field name="product_url" widget="url"/>
+                        </group>
+                        <group string="Quantities">
+                            <field name="current_qty"/>
+                            <field name="restock_level"/>
+                            <field name="restock_amount"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Linked Records">
+                            <field name="todo_task_id"/>
+                            <field name="task_state"/>
+                            <field name="source_pos_order_id"/>
+                            <field name="inventory_move_id"/>
+                        </group>
+                        <group string="Snapshot State">
+                            <field name="is_active_snapshot"/>
+                            <field name="superseded_by_item_id"/>
+                            <field name="superseded_at"/>
+                            <field name="superseded_reason"/>
+                        </group>
+                    </group>
+                    <group string="Transfer">
+                        <field name="inventory_transferred"/>
+                        <field name="inventory_transferred_at"/>
+                        <field name="inventory_transferred_by"/>
+                        <field name="inventory_transfer_error"/>
+                    </group>
+                    <group string="Identity">
+                        <field name="identity_key"/>
+                        <field name="shopify_location_id"/>
+                        <field name="product_id_global"/>
+                        <field name="variant_id_global"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_shopify_restock_item_search" model="ir.ui.view">
+        <field name="name">shopify.restock.item.search</field>
+        <field name="model">shopify.restock.item</field>
+        <field name="arch" type="xml">
+            <search string="Restock Items">
+                <field name="product_title"/>
+                <field name="sku"/>
+                <field name="todo_task_id"/>
+                <field name="source_pos_order_id"/>
+                <filter string="Active Snapshots" name="active_snapshots"
+                        domain="[('is_active_snapshot', '=', True)]"/>
+                <filter string="Awaiting Transfer" name="awaiting_transfer"
+                        domain="[('inventory_transferred', '=', False), ('is_active_snapshot', '=', True)]"/>
+                <filter string="Transferred" name="transferred"
+                        domain="[('inventory_transferred', '=', True)]"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_shopify_restock_item" model="ir.actions.act_window">
+        <field name="name">Restock Items</field>
+        <field name="res_model">shopify.restock.item</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_shopify_restock_item_search"/>
+        <field name="context">{"search_default_active_snapshots": 1}</field>
+    </record>
+</odoo>

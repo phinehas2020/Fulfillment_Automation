@@ -9,3 +9,4 @@ access_print_test_wizard_user,access.print.test.wizard,model_print_test_wizard,b
 access_shopify_config_wizard_user,access.shopify.config.wizard,model_shopify_config_wizard,base.group_user,1,1,1,1
 access_shippo_recent_transaction_user,access.shippo.recent.transaction,model_shippo_recent_transaction,base.group_user,1,1,1,1
 access_fulfillment_rate_audit_user,access.fulfillment.rate.audit,model_fulfillment_rate_audit,base.group_user,1,1,1,1
+access_shopify_restock_item_user,access.shopify.restock.item,model_shopify_restock_item,base.group_user,1,1,1,1

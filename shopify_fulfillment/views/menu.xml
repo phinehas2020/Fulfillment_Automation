@@ -8,6 +8,7 @@
     <menuitem id="menu_shopify_print_jobs" name="Print Jobs" parent="menu_shopify_root" action="action_print_job" sequence="30"/>
     <menuitem id="menu_shopify_recent_shipments" name="Recent Shipments" parent="menu_shopify_root" action="action_fetch_recent_shipments" sequence="35"/>
     <menuitem id="menu_shopify_rate_audit" name="Rate Audit" parent="menu_shopify_root" action="action_fulfillment_rate_audit" sequence="40"/>
+    <menuitem id="menu_shopify_restock_items" name="Restock Items" parent="menu_shopify_root" action="action_shopify_restock_item" sequence="45"/>
     
     <!-- Configuration action defined here to avoid reference issues -->
     <record id="action_shopify_settings" model="ir.actions.act_window">

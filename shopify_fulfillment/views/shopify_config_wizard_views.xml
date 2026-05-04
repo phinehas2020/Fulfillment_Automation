@@ -33,6 +33,11 @@
                             <field name="fulfillment_pos_stock_location_id"/>
                         </group>
                     </group>
+                    <group string="POS Restock Alerts">
+                        <field name="fulfillment_restock_project_id"
+                               options="{'no_create': True, 'no_create_edit': True}"/>
+                        <field name="fulfillment_restock_source_location_id"/>
+                    </group>
                 </sheet>
                 <footer>
                     <button name="action_send_test_alert" type="object" string="Send Test Alerts" class="btn-secondary"/>

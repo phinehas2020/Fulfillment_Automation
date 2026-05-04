@@ -247,6 +247,79 @@ class ShopifyAPI:
 
         return False
 
+    @staticmethod
+    def _coerce_metafield_number(value):
+        """Best-effort numeric coercion for restock-related metafields."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return value
+        try:
+            text = str(value).strip()
+            if not text:
+                return None
+            if "." in text:
+                return float(text)
+            return int(text)
+        except (TypeError, ValueError):
+            return None
+
+    def _fetch_metafields(self, owner_kind: str, owner_id: str) -> List[Dict[str, Any]]:
+        """Fetch metafields for either a product or variant. Returns [] on missing/error."""
+        if not owner_id:
+            return []
+        if owner_kind not in ("products", "variants"):
+            raise ValueError(f"Unsupported metafield owner kind: {owner_kind}")
+        url = self._url(f"/{owner_kind}/{owner_id}/metafields.json?limit=250")
+        try:
+            resp = requests.get(url, headers=self._headers(), timeout=15)
+        except Exception as exc:  # pylint: disable=broad-except
+            _logger.warning("Metafield fetch failed for %s/%s: %s", owner_kind, owner_id, exc)
+            return []
+        if resp.status_code == 404:
+            return []
+        if resp.status_code >= 400:
+            _logger.warning(
+                "Metafield fetch returned %s for %s/%s: %s",
+                resp.status_code, owner_kind, owner_id, resp.text,
+            )
+            return []
+        return resp.json().get("metafields", []) or []
+
+    def get_variant_restock_metafields(
+        self,
+        variant_id: Optional[str],
+        product_id: Optional[str],
+        namespace: str = "custom",
+    ) -> Dict[str, Optional[float]]:
+        """Return {restock_level, desired_inventory_level} for a variant.
+
+        Variant-level metafields take precedence over product-level. Returns Nones when
+        a metafield is missing so the caller can skip silently.
+        """
+        target_keys = {
+            "restock_level": "restocklevel",
+            "desired_inventory_level": "desiredinventorylevel",
+        }
+        result: Dict[str, Optional[float]] = {key: None for key in target_keys}
+
+        def _harvest(metafields):
+            for metafield in metafields or []:
+                if metafield.get("namespace") and metafield["namespace"] != namespace:
+                    continue
+                norm_key = self._normalized_metafield_key(metafield.get("key"))
+                for out_key, want in target_keys.items():
+                    if norm_key == want and result[out_key] is None:
+                        result[out_key] = self._coerce_metafield_number(metafield.get("value"))
+
+        if variant_id:
+            _harvest(self._fetch_metafields("variants", str(variant_id)))
+        if product_id and any(value is None for value in result.values()):
+            _harvest(self._fetch_metafields("products", str(product_id)))
+        return result
+
     def get_variant_inventory_item_id(self, variant_id: str) -> str:
         """Fetch the inventory item ID for a Shopify variant."""
         variant = self.get_product_variant(variant_id)

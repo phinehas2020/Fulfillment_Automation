@@ -10,10 +10,29 @@ class ProjectTask(models.Model):
     shopify_order_id = fields.Many2one("shopify.order", string="Shopify Order", readonly=True)
     is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
     fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
+    restock_item_id = fields.Many2one(
+        "shopify.restock.item",
+        string="Shopify Restock Item",
+        ondelete="set null",
+    )
 
     @staticmethod
     def _is_done_state(state):
         return isinstance(state, str) and state.endswith("done")
+
+    def _restock_task_is_done(self) -> bool:
+        """Mirror the original restock plugin's done check (Odoo 18 state -> stage fallback)."""
+        self.ensure_one()
+        if "state" in self._fields and self.state:
+            return self.state == "1_done"
+        stage = self.stage_id
+        if not stage:
+            return False
+        if "is_closed" in stage._fields:
+            return bool(stage.is_closed)
+        if "fold" in stage._fields:
+            return bool(stage.fold)
+        return False
 
     def _send_task_error_alert(self, title: str, message: str):
         self.ensure_one()
@@ -194,6 +213,9 @@ class ProjectTask(models.Model):
         return tasks
 
     def write(self, vals):
+        restock_tasks = self.filtered("restock_item_id")
+        restock_done_before = {t.id: t._restock_task_is_done() for t in restock_tasks}
+
         res = super().write(vals)
         # Check if task is being marked as done
         if 'state' in vals and self._is_done_state(vals["state"]):
@@ -206,5 +228,37 @@ class ProjectTask(models.Model):
                           _logger.exception("Error in auto-deduct inventory on write")
                           task.message_post(body=_("Background error during inventory deduction: %s") % str(e))
                           task._send_task_error_alert("Inventory Auto-Deduct Failed (Write)", str(e))
-        
+
+        for task in restock_tasks:
+            try:
+                if restock_done_before.get(task.id):
+                    continue
+                if not task._restock_task_is_done():
+                    continue
+                items = self.env["shopify.restock.item"].sudo().search([
+                    ("todo_task_id", "=", task.id),
+                    ("is_active_snapshot", "=", True),
+                    ("inventory_transferred", "=", False),
+                ])
+                if (
+                    not items
+                    and task.restock_item_id
+                    and task.restock_item_id.is_active_snapshot
+                    and not task.restock_item_id.inventory_transferred
+                ):
+                    items = task.restock_item_id
+                if not items:
+                    continue
+                _logger.info(
+                    "Restock task %s marked done; transferring inventory for items %s",
+                    task.id, items.ids,
+                )
+                items.with_context(
+                    transferred_by_uid=self.env.user.id
+                ).sudo().action_transfer_inventory()
+            except Exception:  # pylint: disable=broad-except
+                _logger.exception(
+                    "Failed to auto-transfer inventory for restock task %s", task.id
+                )
+
         return res

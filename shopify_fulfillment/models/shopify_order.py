@@ -703,12 +703,25 @@ class ShopifyOrder(models.Model):
                 preflight_errors.append(f"{self._format_pos_line_for_error(line)}: {exc}")
                 continue
 
+            try:
+                restock_metafields = api.get_variant_restock_metafields(
+                    line.shopify_variant_id,
+                    line.shopify_product_id,
+                )
+            except Exception:  # pylint: disable=broad-except
+                _logger.exception(
+                    "Failed to fetch restock metafields for variant %s; skipping restock check",
+                    line.shopify_variant_id,
+                )
+                restock_metafields = {"restock_level": None, "desired_inventory_level": None}
+
             sync_rows.append(
                 {
                     "line": line,
                     "product": product,
                     "inventory_item_id": inventory_item_id,
                     "available_qty": available_qty,
+                    "restock_metafields": restock_metafields,
                 }
             )
 
@@ -787,8 +800,83 @@ class ShopifyOrder(models.Model):
                 "pos_inventory_synced_at": fields.Datetime.now(),
             }
         )
+        try:
+            self._create_restock_detections_from_rows(sync_rows, shopify_location_id)
+        except Exception:  # pylint: disable=broad-except
+            _logger.exception(
+                "Restock detection failed for order %s; POS sync itself succeeded",
+                self.order_name,
+            )
         _logger.info("POS inventory sync completed for order %s", self.order_name)
         return True
+
+    def _create_restock_detections_from_rows(self, sync_rows, shopify_location_id):
+        """Flag below-threshold variants from a successful POS sync and (re)open tasks."""
+        self.ensure_one()
+        if not sync_rows:
+            return
+        item_model = self.env["shopify.restock.item"].sudo()
+        for row in sync_rows:
+            metafields = row.get("restock_metafields") or {}
+            restock_level = metafields.get("restock_level")
+            desired_level = metafields.get("desired_inventory_level")
+            if restock_level is None:
+                continue
+            try:
+                restock_level_int = int(restock_level)
+            except (TypeError, ValueError):
+                continue
+            try:
+                current_qty = int(row.get("available_qty") or 0)
+            except (TypeError, ValueError):
+                continue
+            if current_qty >= restock_level_int:
+                continue
+
+            try:
+                desired_int = int(desired_level) if desired_level is not None else 0
+            except (TypeError, ValueError):
+                desired_int = 0
+            recommended = max(desired_int - current_qty, 0) if desired_int else 0
+
+            line = row["line"]
+            shop_domain = self._get_shopify_api().shop_domain or ""
+            product_url = ""
+            if shop_domain and line.shopify_product_id:
+                product_url = (
+                    f"https://{shop_domain}/admin/products/{line.shopify_product_id}"
+                )
+
+            identity_key = item_model._compute_identity_key(
+                location_piece=shopify_location_id,
+                variant_id_global=line.shopify_variant_id,
+                product_id_global=line.shopify_product_id,
+                sku=line.sku,
+                product_title=line.title,
+                variant_title=line.variant_title,
+            )
+            item = item_model.create({
+                "product_title": line.title or "",
+                "variant_title": line.variant_title or "",
+                "sku": line.sku or "",
+                "product_url": product_url or False,
+                "current_qty": current_qty,
+                "restock_level": restock_level_int,
+                "restock_amount": recommended,
+                "product_id_global": line.shopify_product_id or "",
+                "variant_id_global": line.shopify_variant_id or "",
+                "shopify_location_id": str(shopify_location_id) if shopify_location_id else False,
+                "identity_key": identity_key,
+                "is_active_snapshot": True,
+                "source_pos_order_id": self.id,
+            })
+            try:
+                item._create_or_merge_task()
+            except Exception:  # pylint: disable=broad-except
+                _logger.exception(
+                    "Failed to create/merge restock task for item %s (variant %s)",
+                    item.id, line.shopify_variant_id,
+                )
 
     @api.depends("line_ids.weight", "line_ids.quantity")
     def _compute_totals(self):

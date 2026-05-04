@@ -27,6 +27,10 @@ class ShopifyConfigWizard(models.TransientModel):
     fulfillment_risk_reviewer_id = fields.Many2one('res.users', string="Risk Reviewer (Email Notification)")
     fulfillment_stock_location_id = fields.Many2one('stock.location', string="Online Fulfillment Source Location")
     fulfillment_pos_stock_location_id = fields.Many2one('stock.location', string="POS Retail Stock Location")
+    fulfillment_restock_project_id = fields.Many2one('project.project', string="Restock Tasks Project")
+    fulfillment_restock_source_location_id = fields.Many2one(
+        'stock.location', string="Restock Source Location"
+    )
 
     def _get_param_as_int(self, key):
         """Safely retrieve a config parameter as an int > 0, or False."""
@@ -61,6 +65,10 @@ class ShopifyConfigWizard(models.TransientModel):
             'fulfillment_risk_reviewer_id': self._get_param_as_int('fulfillment.risk_reviewer_id'),
             'fulfillment_stock_location_id': self._get_param_as_int('fulfillment.stock_location_id'),
             'fulfillment_pos_stock_location_id': self._get_param_as_int('fulfillment.pos_stock_location_id'),
+            'fulfillment_restock_project_id': self._get_param_as_int('fulfillment.restock_project_id'),
+            'fulfillment_restock_source_location_id': self._get_param_as_int(
+                'fulfillment.restock_source_location_id'
+            ),
         })
         return res
 
@@ -83,6 +91,11 @@ class ShopifyConfigWizard(models.TransientModel):
         ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))
         ICP.set_param('fulfillment.stock_location_id', str(self.fulfillment_stock_location_id.id or ''))
         ICP.set_param('fulfillment.pos_stock_location_id', str(self.fulfillment_pos_stock_location_id.id or ''))
+        ICP.set_param('fulfillment.restock_project_id', str(self.fulfillment_restock_project_id.id or ''))
+        ICP.set_param(
+            'fulfillment.restock_source_location_id',
+            str(self.fulfillment_restock_source_location_id.id or ''),
+        )
         
         return {
             'type': 'ir.actions.client',
