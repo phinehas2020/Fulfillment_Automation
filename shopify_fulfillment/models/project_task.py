@@ -10,9 +10,9 @@ class ProjectTask(models.Model):
     shopify_order_id = fields.Many2one("shopify.order", string="Shopify Order", readonly=True)
     is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
     fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
-    restock_item_id = fields.Many2one(
+    fulfillment_restock_item_id = fields.Many2one(
         "fulfillment.restock.item",
-        string="Shopify Restock Item",
+        string="POS Restock Item",
         ondelete="set null",
     )
 
@@ -213,7 +213,7 @@ class ProjectTask(models.Model):
         return tasks
 
     def write(self, vals):
-        restock_tasks = self.filtered("restock_item_id")
+        restock_tasks = self.filtered("fulfillment_restock_item_id")
         restock_done_before = {t.id: t._restock_task_is_done() for t in restock_tasks}
 
         res = super().write(vals)
@@ -242,11 +242,11 @@ class ProjectTask(models.Model):
                 ])
                 if (
                     not items
-                    and task.restock_item_id
-                    and task.restock_item_id.is_active_snapshot
-                    and not task.restock_item_id.inventory_transferred
+                    and task.fulfillment_restock_item_id
+                    and task.fulfillment_restock_item_id.is_active_snapshot
+                    and not task.fulfillment_restock_item_id.inventory_transferred
                 ):
-                    items = task.restock_item_id
+                    items = task.fulfillment_restock_item_id
                 if not items:
                     continue
                 _logger.info(

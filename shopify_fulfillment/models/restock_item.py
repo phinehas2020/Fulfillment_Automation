@@ -240,7 +240,7 @@ class ShopifyRestockItem(models.Model):
                 "superseded_reason": False,
             })
             existing.sudo().write({
-                "restock_item_id": self.id,
+                "fulfillment_restock_item_id": self.id,
                 "name": self._build_task_title_for(self),
                 "description": "\n".join(self._description_lines()),
             })
@@ -250,7 +250,7 @@ class ShopifyRestockItem(models.Model):
             "name": self._build_task_title_for(self),
             "description": "\n".join(self._description_lines()),
             "project_id": project.id if project else False,
-            "restock_item_id": self.id,
+            "fulfillment_restock_item_id": self.id,
         }
         task_model = self.env["project.task"]
         if "user_id" not in task_model._fields and "user_ids" in task_model._fields:
