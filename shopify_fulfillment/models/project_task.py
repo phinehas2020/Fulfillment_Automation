@@ -11,7 +11,7 @@ class ProjectTask(models.Model):
     is_fulfillment_task = fields.Boolean(string="Is Fulfillment Task", default=False)
     fulfillment_inventory_deducted = fields.Boolean(string="Inventory Deducted", default=False, readonly=True)
     restock_item_id = fields.Many2one(
-        "shopify.restock.item",
+        "fulfillment.restock.item",
         string="Shopify Restock Item",
         ondelete="set null",
     )
@@ -235,7 +235,7 @@ class ProjectTask(models.Model):
                     continue
                 if not task._restock_task_is_done():
                     continue
-                items = self.env["shopify.restock.item"].sudo().search([
+                items = self.env["fulfillment.restock.item"].sudo().search([
                     ("todo_task_id", "=", task.id),
                     ("is_active_snapshot", "=", True),
                     ("inventory_transferred", "=", False),

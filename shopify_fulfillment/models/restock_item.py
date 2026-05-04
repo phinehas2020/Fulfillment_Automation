@@ -16,7 +16,7 @@ _logger = logging.getLogger(__name__)
 
 
 class ShopifyRestockItem(models.Model):
-    _name = "shopify.restock.item"
+    _name = "fulfillment.restock.item"
     _description = "Shopify Restock Item"
     _order = "create_date desc, id desc"
 
@@ -43,7 +43,7 @@ class ShopifyRestockItem(models.Model):
         copy=False,
     )
     superseded_by_item_id = fields.Many2one(
-        comodel_name="shopify.restock.item",
+        comodel_name="fulfillment.restock.item",
         string="Superseded By",
         ondelete="set null",
         copy=False,

@@ -815,7 +815,7 @@ class ShopifyOrder(models.Model):
         self.ensure_one()
         if not sync_rows:
             return
-        item_model = self.env["shopify.restock.item"].sudo()
+        item_model = self.env["fulfillment.restock.item"].sudo()
         for row in sync_rows:
             metafields = row.get("restock_metafields") or {}
             restock_level = metafields.get("restock_level")
