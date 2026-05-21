@@ -422,41 +422,99 @@ class ShopifyAPI:
             _logger.error("Failed to parse weight from GraphQL response: %s", e)
         return 0.0
 
+    @staticmethod
+    def _strongest_risk_level(levels: List[str]) -> Optional[str]:
+        rank = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+        normalized = [str(level or "").upper() for level in levels]
+        normalized = [level for level in normalized if level in rank]
+        if not normalized:
+            return None
+        return max(normalized, key=lambda level: rank[level])
+
+    @classmethod
+    def _risk_level_from_summary(cls, risk_summary: Dict[str, Any]) -> Optional[str]:
+        if not risk_summary:
+            return None
+
+        recommendation = str(risk_summary.get("recommendation") or "").upper()
+        recommendation_levels = {
+            "CANCEL": "HIGH",
+            "INVESTIGATE": "MEDIUM",
+            "ACCEPT": "LOW",
+            "NONE": "LOW",
+        }
+        levels = []
+        if recommendation in recommendation_levels:
+            levels.append(recommendation_levels[recommendation])
+
+        assessments = risk_summary.get("assessments") or []
+        for assessment in assessments:
+            assessment_level = str(assessment.get("riskLevel") or "").upper()
+            if assessment_level == "PENDING":
+                levels.append("MEDIUM")
+            else:
+                levels.append(assessment_level)
+        return cls._strongest_risk_level(levels)
+
+    def _get_risk_level_from_rest(self, shopify_order_id: str) -> str:
+        numeric_id = str(shopify_order_id).split("/")[-1]
+        url = self._url(f"/orders/{numeric_id}/risks.json")
+        resp = requests.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code >= 400:
+            raise exceptions.UserError(
+                f"Shopify REST order risk lookup failed for {numeric_id}: {resp.status_code} {resp.text}"
+            )
+
+        payload = resp.json()
+        risks = payload.get("risks") or []
+        levels = []
+        for risk in risks:
+            recommendation = str(risk.get("recommendation") or "").lower()
+            if recommendation == "cancel":
+                levels.append("HIGH")
+            elif recommendation == "investigate":
+                levels.append("MEDIUM")
+            elif recommendation == "accept":
+                levels.append("LOW")
+
+            if str(risk.get("score") or "").isdigit():
+                score = int(risk["score"])
+                if score >= 2:
+                    levels.append("HIGH")
+                elif score == 1:
+                    levels.append("MEDIUM")
+                else:
+                    levels.append("LOW")
+
+        return self._strongest_risk_level(levels) or "LOW"
+
     def get_risk_level(self, shopify_order_id: str) -> str:
-        """Fetch risk level (HIGH, MEDIUM, LOW) using GraphQL RiskAssessments."""
-        # Ensure ID is formatted for GraphQL
+        """Fetch Shopify risk level (HIGH, MEDIUM, LOW) without failing open."""
         gid = shopify_order_id
         if not str(gid).startswith("gid://"):
             gid = f"gid://shopify/Order/{shopify_order_id}"
-            
-        # We query riskAssessments as per modern API to get the detailed analysis
+
         query = """
         {
           order(id: "%s") {
-            riskAssessments(first: 5) {
-              nodes {
+            risk {
+              recommendation
+              assessments {
                 riskLevel
               }
             }
           }
         }
         """ % gid
-        
+
         data = self.graphql_query(query)
-        try:
+        errors = data.get("errors") or []
+        if errors:
+            _logger.warning("Shopify GraphQL risk lookup returned errors for %s: %s", shopify_order_id, errors)
+        else:
             order_data = data.get("data", {}).get("order") or {}
-            assessments = order_data.get("riskAssessments", {}).get("nodes", [])
-            
-            # Determine aggregate risk (High > Medium > Low)
-            has_high = any(a.get("riskLevel") == "HIGH" for a in assessments)
-            if has_high:
-                return "HIGH"
-                
-            has_medium = any(a.get("riskLevel") == "MEDIUM" for a in assessments)
-            if has_medium:
-                return "MEDIUM"
-                
-            return "LOW"
-        except Exception as e:
-            _logger.error("Failed to fetch risk level for %s: %s", shopify_order_id, e)
-            return "LOW"
+            risk_level = self._risk_level_from_summary(order_data.get("risk") or {})
+            if risk_level:
+                return risk_level
+
+        return self._get_risk_level_from_rest(shopify_order_id)

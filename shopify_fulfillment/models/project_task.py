@@ -60,6 +60,30 @@ class ProjectTask(models.Model):
         if self.fulfillment_inventory_deducted:
             return
 
+        try:
+            risk_level = self.shopify_order_id._refresh_shopify_risk_level()
+        except UserError as exc:
+            message = str(exc)
+            self.shopify_order_id.write({
+                "state": "manual_required",
+                "error_message": message,
+            })
+            self.message_post(body=message)
+            return
+
+        if risk_level in ("HIGH", "MEDIUM"):
+            message = _(
+                "Inventory deduction stopped because Shopify marked this order as %s risk. "
+                "Manual review is required before fulfillment."
+            ) % risk_level.title()
+            self.shopify_order_id.write({
+                "state": "manual_required",
+                "error_message": message,
+            })
+            self.shopify_order_id._send_risk_notification()
+            self.message_post(body=message)
+            return
+
         _logger.info("Starting inventory deduction for task %s (Order: %s)", self.id, self.shopify_order_id.order_name)
 
         # Get configuration

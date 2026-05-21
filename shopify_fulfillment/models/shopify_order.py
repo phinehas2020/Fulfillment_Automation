@@ -897,22 +897,30 @@ class ShopifyOrder(models.Model):
                 order.box_count = 1 if order.shipment_id else 0
                 order.is_multi_box = False
 
+    def _refresh_shopify_risk_level(self):
+        """Fetch and persist the current Shopify risk level before fulfillment."""
+        self.ensure_one()
+        try:
+            api = self._get_shopify_api()
+            risk = api.get_risk_level(self.shopify_id)
+        except Exception as exc:
+            _logger.exception("Failed to verify Shopify risk level for order %s", self.id)
+            raise exceptions.UserError(
+                "Unable to verify Shopify fraud risk. Manual review is required before fulfillment."
+            ) from exc
+
+        if risk not in ("HIGH", "MEDIUM", "LOW"):
+            raise exceptions.UserError(
+                f"Shopify returned an invalid fraud risk level for order {self.order_name}: {risk}"
+            )
+
+        self.sudo().write({"shopify_risk_level": risk})
+        return risk
+
     def _is_high_risk(self):
-        """Check for high risk factors using Shopify Risk Level."""
-        if not self.shopify_risk_level:
-             # Fetch it if missing
-             try:
-                 api = self._get_shopify_api()
-                 risk = api.get_risk_level(self.shopify_id)
-                 # Write immediately to save for future
-                 self.sudo().write({"shopify_risk_level": risk})
-                 # If HIGH, return True
-                 if risk == 'HIGH':
-                     return True
-             except Exception as e:
-                 _logger.error("Failed to fetch risk level: %s", e)
-                 
-        return self.shopify_risk_level == 'HIGH'
+        """Compatibility helper: any Shopify risk needing review blocks fulfillment."""
+        self.ensure_one()
+        return self._refresh_shopify_risk_level() in ("HIGH", "MEDIUM")
 
     def _send_risk_notification(self):
         """Send email to risk reviewer."""
@@ -1319,11 +1327,20 @@ class ShopifyOrder(models.Model):
             return
 
         # Step 0: Risk Check
-        if self._is_high_risk():
-            _logger.warning("Order %s flagged as high risk. Stopping processing.", self.id)
+        try:
+            risk_level = self._refresh_shopify_risk_level()
+        except exceptions.UserError as exc:
             self.write({
-                "state": "manual_required", 
-                "error_message": "Flagged as High Risk/Spam. Notification sent for verification."
+                "state": "manual_required",
+                "error_message": str(exc),
+            })
+            return
+
+        if risk_level in ("HIGH", "MEDIUM"):
+            _logger.warning("Order %s flagged as %s risk. Stopping processing.", self.id, risk_level)
+            self.write({
+                "state": "manual_required",
+                "error_message": f"Flagged by Shopify as {risk_level.title()} Risk. Manual review required before fulfillment.",
             })
             self._send_risk_notification()
             return
