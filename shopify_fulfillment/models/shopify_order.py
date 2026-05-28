@@ -878,6 +878,119 @@ class ShopifyOrder(models.Model):
                     item.id, line.shopify_variant_id,
                 )
 
+    def _get_retail_shopify_location_id_for_restock(self):
+        """Best available Shopify location for retail restock checks."""
+        self.ensure_one()
+        location_id = self._get_shopify_pos_location_id()
+        if location_id:
+            return location_id
+
+        ICP = self.env["ir.config_parameter"].sudo()
+        for key in (
+            "fulfillment.shopify_location_id",
+            "odoo_shopify_restock.location_id_numeric",
+            "odoo_shopify_restock.location_id_global",
+        ):
+            raw = (ICP.get_param(key) or "").strip()
+            if raw:
+                return raw.split("/")[-1]
+
+        recent_pos = self.sudo().search(
+            [("source", "=", "pos"), ("shopify_location_id", "!=", False)],
+            order="write_date desc, id desc",
+            limit=1,
+        )
+        return (recent_pos.shopify_location_id or "").strip()
+
+    def _build_restock_detection_rows_for_retail_location(self, shopify_location_id):
+        """Read Shopify's current retail quantity for this order's lines."""
+        self.ensure_one()
+        if not shopify_location_id:
+            return []
+
+        api = self._get_shopify_api()
+        rows = []
+        for line in self.line_ids:
+            try:
+                if api.product_has_true_metafield(line.shopify_product_id, "baked_goods"):
+                    _logger.info(
+                        "Order %s line %s skipped for restock detection: baked goods product",
+                        self.order_name,
+                        line.sku or line.title or line.id,
+                    )
+                    continue
+            except Exception as exc:  # pylint: disable=broad-except
+                _logger.warning(
+                    "Order %s line %s restock metafield precheck failed: %s",
+                    self.order_name,
+                    line.sku or line.title or line.id,
+                    exc,
+                )
+                continue
+
+            sku = (line.sku or "").strip()
+            if not line.shopify_variant_id or not sku:
+                continue
+
+            product = self._find_odoo_product_by_sku(sku)
+            if not product:
+                _logger.warning(
+                    "Order %s line %s skipped for restock detection: no matching Odoo product",
+                    self.order_name,
+                    sku,
+                )
+                continue
+
+            try:
+                inventory_item_id = api.get_variant_inventory_item_id(line.shopify_variant_id)
+                available_qty = api.get_available_inventory_quantity(
+                    inventory_item_id,
+                    shopify_location_id,
+                )
+                restock_metafields = api.get_variant_restock_metafields(
+                    line.shopify_variant_id,
+                    line.shopify_product_id,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                _logger.warning(
+                    "Order %s line %s skipped for restock detection: %s",
+                    self.order_name,
+                    sku,
+                    exc,
+                )
+                continue
+
+            rows.append({
+                "line": line,
+                "product": product,
+                "inventory_item_id": inventory_item_id,
+                "available_qty": available_qty,
+                "restock_metafields": restock_metafields,
+            })
+        return rows
+
+    def _run_retail_restock_detection(self):
+        """Create restock tasks when Shopify retail inventory is below threshold.
+
+        POS orders already call this as part of the POS inventory sync. Non-POS
+        orders can still reduce the same Shopify retail location, so they need a
+        threshold check without rewriting Odoo's POS stock quantity.
+        """
+        for order in self:
+            if order.source == "pos":
+                continue
+            shopify_location_id = order._get_retail_shopify_location_id_for_restock()
+            if not shopify_location_id:
+                _logger.warning(
+                    "Order %s skipped retail restock detection: no Shopify location",
+                    order.order_name,
+                )
+                continue
+            rows = order._build_restock_detection_rows_for_retail_location(
+                shopify_location_id
+            )
+            order._create_restock_detections_from_rows(rows, shopify_location_id)
+
     @api.depends("line_ids.weight", "line_ids.quantity")
     def _compute_totals(self):
         for order in self:
@@ -1261,6 +1374,14 @@ class ShopifyOrder(models.Model):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
         for order in self:
             try:
+                try:
+                    order._run_retail_restock_detection()
+                except Exception:  # pylint: disable=broad-except
+                    _logger.exception(
+                        "Retail restock detection failed for order %s",
+                        order.order_name,
+                    )
+
                 # Ensure customer is in Odoo database before processing
                 try:
                     order._create_or_update_partner()
