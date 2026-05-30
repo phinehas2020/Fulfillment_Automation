@@ -96,7 +96,7 @@ class ShopifyConfigWizard(models.TransientModel):
             'fulfillment.restock_source_location_id',
             str(self.fulfillment_restock_source_location_id.id or ''),
         )
-        
+
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',

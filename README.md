@@ -24,4 +24,4 @@ Notes
 - ZPL conversion is simplified; adjust to request ZPL from Shopify or convert PDFs.
 - Box selection uses volume/weight heuristics per the spec with seeded default boxes.
 - Print agent polls `/print-agent/poll` and reports results to `/print-agent/complete`.
-
+- Outlook PO intake now lives in the standalone private `outlook-po-intake` addon/repository.
