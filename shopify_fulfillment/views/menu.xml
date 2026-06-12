@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <menuitem id="menu_shopify_root" name="Shopify Fulfillment" sequence="10"/>
+    <menuitem id="menu_shopify_root" name="Shopify Fulfillment" sequence="10" web_icon="shopify_fulfillment,static/description/icon.png"/>
     <menuitem id="menu_shopify_orders" name="Orders" parent="menu_shopify_root" action="view_shopify_order_action" sequence="10"/>
     <menuitem id="menu_shopify_pos_orders" name="POS Orders" parent="menu_shopify_root" action="view_shopify_pos_order_action" sequence="12"/>
     <menuitem id="menu_shopify_order_sync" name="Sync Now" parent="menu_shopify_root" action="action_import_from_shopify_server" sequence="15"/>
