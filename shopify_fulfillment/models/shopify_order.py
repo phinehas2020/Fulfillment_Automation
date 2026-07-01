@@ -726,8 +726,17 @@ class ShopifyOrder(models.Model):
             )
 
         if preflight_errors:
+            self._run_pos_restock_detection_from_rows(
+                sync_rows,
+                shopify_location_id,
+                "POS inventory sync was blocked by another line",
+            )
             message = "POS inventory sync blocked. No Odoo stock was changed:\n"
             message += "\n".join(f"- {error}" for error in preflight_errors)
+            if sync_rows:
+                message += (
+                    "\n\nRestock detection still ran for valid lines on this order."
+                )
             if skipped_lines:
                 message += "\n\nSkipped ignored lines:\n"
                 message += "\n".join(f"- {line}" for line in skipped_lines)
@@ -771,8 +780,17 @@ class ShopifyOrder(models.Model):
             }
 
         if preflight_errors:
+            self._run_pos_restock_detection_from_rows(
+                sync_rows,
+                shopify_location_id,
+                "POS inventory sync was blocked by conflicting variant quantities",
+            )
             message = "POS inventory sync blocked. No Odoo stock was changed:\n"
             message += "\n".join(f"- {error}" for error in preflight_errors)
+            if sync_rows:
+                message += (
+                    "\n\nRestock detection still ran for valid lines on this order."
+                )
             return self._mark_pos_inventory_sync_manual_required(message)
 
         summary_lines = []
@@ -800,18 +818,29 @@ class ShopifyOrder(models.Model):
                 "pos_inventory_synced_at": fields.Datetime.now(),
             }
         )
+        self._run_pos_restock_detection_from_rows(
+            sync_rows,
+            shopify_location_id,
+            "POS inventory sync succeeded",
+        )
+        _logger.info("POS inventory sync completed for order %s", self.order_name)
+        return True
+
+    def _run_pos_restock_detection_from_rows(self, sync_rows, shopify_location_id, context):
+        """Create restock tasks for valid POS lines, even when another line blocks stock sync."""
+        if not sync_rows:
+            return
         try:
             self._create_restock_detections_from_rows(sync_rows, shopify_location_id)
         except Exception:  # pylint: disable=broad-except
             _logger.exception(
-                "Restock detection failed for order %s; POS sync itself succeeded",
+                "Restock detection failed for order %s while %s",
                 self.order_name,
+                context,
             )
-        _logger.info("POS inventory sync completed for order %s", self.order_name)
-        return True
 
     def _create_restock_detections_from_rows(self, sync_rows, shopify_location_id):
-        """Flag below-threshold variants from a successful POS sync and (re)open tasks."""
+        """Flag below-threshold variants from validated rows and (re)open tasks."""
         self.ensure_one()
         if not sync_rows:
             return
@@ -1347,6 +1376,13 @@ class ShopifyOrder(models.Model):
             group_id = group.id if group else False
             single_shipment = order.shipment_id
             single_group_id = single_shipment.group_id.id if single_shipment else False
+            shipments_to_refund = self.env["fulfillment.shipment"]
+            if group:
+                shipments_to_refund |= group.shipment_ids
+            if single_shipment:
+                shipments_to_refund |= single_shipment
+
+            order._request_shippo_refunds_for_shipments(shipments_to_refund)
 
             if order.print_job_ids:
                 # Print jobs are not unlinkable by default users, so elevate for cleanup.
@@ -1369,6 +1405,99 @@ class ShopifyOrder(models.Model):
             if single_shipment and (not group_id or single_group_id != group_id):
                 if single_shipment.exists():
                     single_shipment.unlink()
+
+    def _request_shippo_refunds_for_shipments(self, shipments):
+        """Request Shippo refunds before resetting local shipment records."""
+        self.ensure_one()
+        shipments = shipments.filtered(
+            lambda shipment: shipment.tracking_number
+            or shipment.label_url
+            or shipment.shippo_transaction_id
+        )
+        if not shipments:
+            return
+
+        refundable_shipments = shipments.filtered(
+            lambda shipment: shipment.refund_status not in ("queued", "pending", "success")
+        )
+        if not refundable_shipments:
+            _logger.info(
+                "Order %s: Existing labels already have refund requests recorded",
+                self.id,
+            )
+            return
+
+        from odoo.addons.shopify_fulfillment.services.shippo_service import ShippoService
+
+        shippo = ShippoService.from_env(self.env)
+        if not shippo:
+            raise exceptions.UserError(
+                "Shippo API key is not configured. Existing labels were not cleared "
+                "because Odoo could not request refunds first."
+            )
+
+        tracking_numbers = [
+            shipment.tracking_number
+            for shipment in refundable_shipments
+            if shipment.tracking_number and not shipment.shippo_transaction_id
+        ]
+        transactions_by_tracking = shippo.find_transactions_by_tracking_numbers(
+            tracking_numbers,
+        )
+
+        failures = []
+        for shipment in refundable_shipments:
+            transaction_id = (shipment.shippo_transaction_id or "").strip()
+            if not transaction_id and shipment.tracking_number:
+                transaction = transactions_by_tracking.get(shipment.tracking_number)
+                transaction_id = (transaction or {}).get("object_id")
+                if transaction_id:
+                    shipment.write({"shippo_transaction_id": transaction_id})
+
+            if not transaction_id:
+                failures.append(
+                    f"{shipment.tracking_number or shipment.id}: missing Shippo transaction ID"
+                )
+                continue
+
+            refund = shippo.refund_label(transaction_id)
+            if refund.get("error"):
+                error_message = refund.get("error") or "Unknown Shippo refund error"
+                shipment.write(
+                    {
+                        "refund_status": "error",
+                        "refund_error_message": error_message,
+                    }
+                )
+                failures.append(
+                    f"{shipment.tracking_number or transaction_id}: {error_message}"
+                )
+                continue
+
+            status = (refund.get("status") or "QUEUED").lower()
+            if status not in ("queued", "pending", "success"):
+                status = "error"
+
+            shipment.write(
+                {
+                    "shippo_refund_id": refund.get("object_id"),
+                    "refund_status": status,
+                    "refund_requested_at": fields.Datetime.now(),
+                    "refund_error_message": False,
+                }
+            )
+
+            if status == "error":
+                failures.append(
+                    f"{shipment.tracking_number or transaction_id}: refund rejected"
+                )
+
+        if failures:
+            raise exceptions.UserError(
+                "Reset stopped before deleting local shipment records because not all "
+                "existing labels could be refunded:\n- "
+                + "\n- ".join(failures)
+            )
 
     def process_order(self):
         """End-to-end flow: box selection, rate shopping, label purchase, print job."""
@@ -1818,6 +1947,7 @@ class ShopifyOrder(models.Model):
             "sequence": sequence,
             "line_ids": [(6, 0, line_ids)],
             "total_weight": packed_box.total_weight_with_box,
+            "shippo_transaction_id": shipment_vals.get("shippo_transaction_id"),
             "carrier": shipment_vals.get("carrier"),
             "service": shipment_vals.get("service"),
             "tracking_number": shipment_vals.get("tracking_number"),

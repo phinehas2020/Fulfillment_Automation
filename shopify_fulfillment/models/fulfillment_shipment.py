@@ -18,6 +18,22 @@ class FulfillmentShipment(models.Model):
     rate_amount = fields.Float()
     rate_currency = fields.Char()
     shopify_fulfillment_id = fields.Char()
+    shippo_transaction_id = fields.Char(string="Shippo Transaction ID", index=True)
+    shippo_refund_id = fields.Char(string="Shippo Refund ID", readonly=True)
+    refund_status = fields.Selection(
+        [
+            ("not_requested", "Not Requested"),
+            ("queued", "Queued"),
+            ("pending", "Pending"),
+            ("success", "Success"),
+            ("error", "Error"),
+        ],
+        default="not_requested",
+        string="Refund Status",
+        readonly=True,
+    )
+    refund_requested_at = fields.Datetime(readonly=True)
+    refund_error_message = fields.Text(readonly=True)
     purchased_at = fields.Datetime()
 
     # Multi-box support fields
@@ -45,6 +61,5 @@ class FulfillmentShipment(models.Model):
         string="Total Weight (g)",
         help="Weight of items + box in grams",
     )
-
 
 

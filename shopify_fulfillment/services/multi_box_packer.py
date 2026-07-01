@@ -1,13 +1,14 @@
 """Multi-box packing algorithm using First Fit Decreasing (FFD)."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import logging
 
 _logger = logging.getLogger(__name__)
 
 GRAMS_PER_OUNCE = 28.3495
 GRAMS_PER_CUBIC_INCH = 9.0
+PRACTICAL_BOX_COUNT_SLACK = 1
 
 
 @dataclass
@@ -77,13 +78,147 @@ class MultiBoxPacker:
     """FFD bin-packing algorithm for order fulfillment.
 
     Hybrid approach:
-    - Combines items into fewest boxes possible
+    - Combines items into a practical whole-order carton tier
     - Items exceeding all box capacities flagged as oversized
     """
 
     def __init__(self, items: List[PackableItem], boxes: List[BoxSpec]):
         self.items = items
         self.boxes = boxes
+
+    @staticmethod
+    def _estimate_volume(weight_grams: float) -> float:
+        return weight_grams / GRAMS_PER_CUBIC_INCH if weight_grams > 0 else 0.0
+
+    @staticmethod
+    def _box_sort_key(box_spec: BoxSpec) -> Tuple[int, float, float, int]:
+        volume_missing = 1 if box_spec.volume_cubic_inches <= 0 else 0
+        volume_value = (
+            box_spec.volume_cubic_inches
+            if box_spec.volume_cubic_inches > 0
+            else float("inf")
+        )
+        return (
+            volume_missing,
+            volume_value,
+            box_spec.max_weight_grams,
+            box_spec.priority,
+        )
+
+    @staticmethod
+    def _box_can_fit(
+        box_spec: BoxSpec,
+        weight_grams: float,
+        volume_cubic_inches: float,
+    ) -> bool:
+        if box_spec.max_weight_grams <= 0:
+            return False
+        if weight_grams > box_spec.max_weight_grams:
+            return False
+        if volume_cubic_inches and box_spec.volume_cubic_inches > 0:
+            return volume_cubic_inches <= box_spec.volume_cubic_inches
+        return True
+
+    def _smallest_fitting_box(
+        self,
+        weight_grams: float,
+        volume_cubic_inches: float,
+        boxes: List[BoxSpec],
+    ) -> Optional[BoxSpec]:
+        candidates = [
+            box_spec
+            for box_spec in boxes
+            if self._box_can_fit(box_spec, weight_grams, volume_cubic_inches)
+        ]
+        if not candidates:
+            return None
+        return sorted(candidates, key=self._box_sort_key)[0]
+
+    def _pack_items_for_target_box(
+        self,
+        items: List[PackableItem],
+        target_box: BoxSpec,
+        boxes: List[BoxSpec],
+    ) -> Optional[List[PackedBox]]:
+        bins: List[Tuple[float, float, List[PackableItem]]] = []
+
+        for item in items:
+            item_volume = self._estimate_volume(item.weight_grams)
+            if not self._box_can_fit(target_box, item.weight_grams, item_volume):
+                return None
+
+            placed = False
+            for i, (current_weight, current_volume, bin_items) in enumerate(bins):
+                new_weight = current_weight + item.weight_grams
+                new_volume = current_volume + item_volume
+                if self._box_can_fit(target_box, new_weight, new_volume):
+                    bins[i] = (new_weight, new_volume, bin_items + [item])
+                    placed = True
+                    break
+
+            if not placed:
+                bins.append((item.weight_grams, item_volume, [item]))
+
+        packed_boxes = []
+        for total_weight, total_volume, bin_items in bins:
+            box_spec = self._smallest_fitting_box(total_weight, total_volume, boxes)
+            if not box_spec:
+                return None
+            packed_boxes.append(
+                PackedBox(
+                    box_spec=box_spec,
+                    items=bin_items,
+                    total_item_weight=total_weight,
+                    is_oversized=False,
+                )
+            )
+
+        return packed_boxes
+
+    def _choose_practical_packing_plan(
+        self,
+        items: List[PackableItem],
+        boxes: List[BoxSpec],
+    ) -> Optional[List[PackedBox]]:
+        solutions = []
+        for target_box in boxes:
+            packed_boxes = self._pack_items_for_target_box(items, target_box, boxes)
+            if not packed_boxes:
+                continue
+            solutions.append((target_box, packed_boxes))
+
+        if not solutions:
+            return None
+
+        fewest_boxes = min(len(packed_boxes) for _, packed_boxes in solutions)
+        practical_solutions = [
+            solution
+            for solution in solutions
+            if len(solution[1]) <= fewest_boxes + PRACTICAL_BOX_COUNT_SLACK
+        ]
+
+        def _solution_key(solution):
+            target_box, packed_boxes = solution
+            volume_missing = sum(
+                1
+                for packed_box in packed_boxes
+                if packed_box.box_spec.volume_cubic_inches <= 0
+            )
+            total_box_volume = sum(
+                packed_box.box_spec.volume_cubic_inches
+                if packed_box.box_spec.volume_cubic_inches > 0
+                else float("inf")
+                for packed_box in packed_boxes
+            )
+            return (
+                volume_missing,
+                total_box_volume,
+                target_box.max_weight_grams,
+                len(packed_boxes),
+                target_box.priority,
+            )
+
+        return sorted(practical_solutions, key=_solution_key)[0][1]
 
     @classmethod
     def from_order(cls, order, boxes_data: List[dict]) -> "MultiBoxPacker":
@@ -148,13 +283,21 @@ class MultiBoxPacker:
         # Step 2: Sort items by weight DESCENDING (First Fit Decreasing)
         expanded_items.sort(key=lambda x: x.weight_grams, reverse=True)
 
-        # Step 3: Sort boxes by max_weight ASCENDING, then priority
+        # Step 3: Sort usable boxes by max_weight ASCENDING, then priority.
+        # Boxes with no positive max weight are ignored for automatic packing.
+        usable_boxes = [box for box in self.boxes if box.max_weight_grams > 0]
+        if not usable_boxes:
+            return PackingResult(
+                success=False,
+                error_message="No boxes with positive max weight configured",
+            )
+
         sorted_boxes = sorted(
-            self.boxes, key=lambda b: (b.max_weight_grams, b.priority)
+            usable_boxes, key=lambda b: (b.max_weight_grams, b.priority)
         )
 
         # Step 4: Find largest box capacity
-        max_box_capacity = max(b.max_weight_grams for b in self.boxes)
+        max_box_capacity = max(b.max_weight_grams for b in usable_boxes)
         largest_box = sorted_boxes[-1]  # Last after sorting is largest
 
         # Step 5: Separate oversized items
@@ -189,27 +332,14 @@ class MultiBoxPacker:
         # Step 7b: If everything fits in a single box (by weight/volume), prefer 1 box.
         if not oversized_items:
             total_weight = sum(item.weight_grams for item in packable_items)
-            total_volume = (
-                total_weight / GRAMS_PER_CUBIC_INCH if total_weight > 0 else 0.0
-            )
-
-            def _box_can_fit_all(box_spec: BoxSpec) -> bool:
-                if total_weight > box_spec.max_weight_grams:
-                    return False
-                if total_volume and box_spec.volume_cubic_inches > 0:
-                    return total_volume <= box_spec.volume_cubic_inches
-                return True
-
-            candidate_boxes = [b for b in sorted_boxes if _box_can_fit_all(b)]
+            total_volume = self._estimate_volume(total_weight)
+            candidate_boxes = [
+                b
+                for b in sorted_boxes
+                if self._box_can_fit(b, total_weight, total_volume)
+            ]
             if candidate_boxes:
-                def _sort_key(b: BoxSpec):
-                    volume_missing = 1 if b.volume_cubic_inches <= 0 else 0
-                    volume_value = (
-                        b.volume_cubic_inches if b.volume_cubic_inches > 0 else float("inf")
-                    )
-                    return (volume_missing, volume_value, b.max_weight_grams, b.priority)
-
-                best_box = sorted(candidate_boxes, key=_sort_key)[0]
+                best_box = sorted(candidate_boxes, key=self._box_sort_key)[0]
                 _logger.info(
                     "Packing shortcut: all items fit in one box (%s) - %.0fg, %.0fin³",
                     best_box.name,
@@ -224,53 +354,40 @@ class MultiBoxPacker:
                         is_oversized=False,
                     )
                 )
-                return PackingResult(packed_boxes=packed_boxes, unpacked_items=[], success=True)
+                return PackingResult(
+                    packed_boxes=packed_boxes,
+                    unpacked_items=[],
+                    success=True,
+                )
 
-        # Step 8: FFD Bin Packing for remaining items
-        # open_bins: list of [box_spec, current_weight, items_list]
-        open_bins: List[List] = []
-
-        for item in packable_items:
-            placed = False
-
-            # Try to fit in existing open bin (First Fit)
-            for i, (box_spec, current_weight, bin_items) in enumerate(open_bins):
-                new_weight = current_weight + item.weight_grams
-                if new_weight <= box_spec.max_weight_grams:
-                    open_bins[i] = [box_spec, new_weight, bin_items + [item]]
-                    placed = True
-                    break
-
-            if not placed:
-                # Open new bin - find smallest box that fits this item
-                for box_spec in sorted_boxes:
-                    if item.weight_grams <= box_spec.max_weight_grams:
-                        open_bins.append([box_spec, item.weight_grams, [item]])
-                        placed = True
-                        break
-
-            if not placed:
-                # Should not happen if we filtered oversized items correctly
+        # Step 8: Choose a practical whole-order carton tier, then pack with FFD.
+        # This avoids opening one tiny carton per light item when larger cartons are
+        # available and only costs at most one label versus the absolute minimum.
+        practical_boxes = self._choose_practical_packing_plan(packable_items, sorted_boxes)
+        if practical_boxes is None:
+            first_item = packable_items[0] if packable_items else None
+            if first_item:
                 _logger.error(
                     "Failed to place item: SKU=%s weight=%.0fg",
-                    item.sku,
-                    item.weight_grams,
+                    first_item.sku,
+                    first_item.weight_grams,
                 )
                 return PackingResult(
-                    unpacked_items=[item],
+                    unpacked_items=[first_item],
                     success=False,
-                    error_message=f"Item {item.sku} ({item.weight_grams:.0f}g) exceeds all box capacities",
+                    error_message=(
+                        f"Item {first_item.sku} ({first_item.weight_grams:.0f}g) "
+                        "exceeds all box capacities"
+                    ),
                 )
+            return PackingResult(success=False, error_message="No packable items")
 
-        # Step 9: Convert open bins to PackedBox objects
-        for box_spec, total_weight, items in open_bins:
-            packed_boxes.append(
-                PackedBox(
-                    box_spec=box_spec,
-                    items=items,
-                    total_item_weight=total_weight,
-                    is_oversized=False,
-                )
+        packed_boxes.extend(practical_boxes)
+        if practical_boxes:
+            _logger.info(
+                "Packing tier selected: %d packable items -> %d boxes",
+                len(packable_items),
+                len(practical_boxes),
             )
 
         # Step 10: Log packing summary

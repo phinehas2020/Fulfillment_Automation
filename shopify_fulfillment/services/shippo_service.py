@@ -279,30 +279,99 @@ class ShippoService:
 
     def get_recent_transactions(self, limit: int = 20):
         """Fetch recent label transactions from Shippo."""
-        url = f"{self.API_URL}/transactions"
-        params = {"results": limit}
+        page = self._get_transactions_page(results=limit)
+        return page.get("results", [])
 
-        _logger.info("Shippo: Fetching recent transactions (limit=%s)", limit)
+    def _get_transactions_page(self, results: int = 100, page: int = 1):
+        """Fetch one page of Shippo label transactions."""
+        url = f"{self.API_URL}/transactions"
+        params = {"results": results, "page": page}
+
+        _logger.info(
+            "Shippo: Fetching transactions (results=%s, page=%s)",
+            results,
+            page,
+        )
 
         try:
             resp = requests.get(url, headers=self._headers(), params=params, timeout=15)
-            _logger.info("Shippo recent transactions status: %s", resp.status_code)
+            _logger.info("Shippo transactions status: %s", resp.status_code)
 
             if resp.status_code >= 400:
-                _logger.error("Shippo recent transactions error: %s", resp.text)
-                return []
+                _logger.error("Shippo transactions error: %s", resp.text)
+                return {"results": [], "next": None, "previous": None}
 
             data = resp.json()
             results = data.get("results", [])
             if not isinstance(results, list):
                 _logger.warning("Shippo transactions payload missing list in 'results'")
-                return []
+                return {"results": [], "next": None, "previous": None}
 
             _logger.info("Shippo: Received %d recent transactions", len(results))
-            return results
+            return data
         except Exception as e:
             _logger.exception("Failed to fetch recent Shippo transactions: %s", e)
-            return []
+            return {"results": [], "next": None, "previous": None}
+
+    def find_transactions_by_tracking_numbers(
+        self,
+        tracking_numbers,
+        max_pages: int = 5,
+        results_per_page: int = 100,
+    ):
+        """Return Shippo transactions keyed by tracking number."""
+        wanted = {str(t).strip() for t in tracking_numbers if t and str(t).strip()}
+        found = {}
+        if not wanted:
+            return found
+
+        for page_number in range(1, max_pages + 1):
+            page = self._get_transactions_page(
+                results=results_per_page,
+                page=page_number,
+            )
+            for transaction in page.get("results", []):
+                tracking_number = transaction.get("tracking_number")
+                if tracking_number in wanted and tracking_number not in found:
+                    found[tracking_number] = transaction
+
+            if wanted.issubset(found.keys()) or not page.get("next"):
+                break
+
+        missing = sorted(wanted.difference(found.keys()))
+        if missing:
+            _logger.warning(
+                "Shippo: Could not resolve transaction IDs for tracking numbers: %s",
+                ", ".join(missing),
+            )
+        return found
+
+    def refund_label(self, transaction_id: str):
+        """Request a refund for one Shippo transaction/label."""
+        transaction_id = (transaction_id or "").strip()
+        if not transaction_id:
+            return {"error": "Missing Shippo transaction ID"}
+
+        url = f"{self.API_URL}/refunds/"
+        payload = {"transaction": transaction_id, "async": False}
+
+        _logger.info("Shippo: Requesting refund for transaction %s", transaction_id)
+        try:
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=20)
+            _logger.info("Shippo Refund Response Status: %s", resp.status_code)
+
+            if resp.status_code >= 400:
+                _logger.error("Shippo Refund Error: %s", resp.text)
+                return {"error": resp.text or f"HTTP {resp.status_code}"}
+
+            data = resp.json()
+            if data.get("status") == "ERROR":
+                _logger.error("Shippo Refund rejected: %s", data)
+                return {"error": "Refund rejected by Shippo", **data}
+            return data
+        except Exception as e:
+            _logger.exception("Shippo Refund Failed: %s", e)
+            return {"error": str(e)}
 
     def purchase_label(self, rate_obj):
         """
@@ -371,6 +440,7 @@ class ShippoService:
                 _logger.warning("No label_url in Shippo response")
             
             return {
+                "shippo_transaction_id": data.get("object_id"),
                 "tracking_number": data.get("tracking_number"),
                 "tracking_url": data.get("tracking_url_provider"),
                 "label_url": label_url,

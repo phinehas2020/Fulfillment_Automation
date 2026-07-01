@@ -29,7 +29,7 @@
                 <header>
                     <button name="action_process" type="object" string="Process" invisible="source == 'pos' or state not in ('pending', 'error', 'manual_required')"/>
                     <button name="action_reset_and_reprocess" type="object" string="Reset &amp; Reprocess" class="btn-secondary"
-                            confirm="This will delete existing shipments/print jobs and repurchase labels. Continue?"
+                            confirm="This will request Shippo refunds for existing labels, delete local shipments/print jobs, and repurchase labels. Continue?"
                             invisible="source == 'pos' or state not in ('ready_to_ship', 'shipped', 'error', 'manual_required')"/>
                     <button name="action_retry_pos_inventory_sync" type="object" string="Retry POS Inventory Sync" class="oe_highlight"
                             invisible="source != 'pos'"/>
@@ -94,6 +94,8 @@
                                         <field name="tracking_number"/>
                                         <field name="carrier"/>
                                         <field name="service"/>
+                                        <field name="shippo_transaction_id" optional="hide"/>
+                                        <field name="refund_status"/>
                                         <field name="rate_amount" string="Cost"/>
                                         <field name="total_weight" string="Weight (g)"/>
                                     </list>
