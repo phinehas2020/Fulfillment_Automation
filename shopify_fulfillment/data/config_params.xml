@@ -1,9 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo noupdate="1">
-    <!-- Auto-process toggle: Set to "True" to enable automatic order processing -->
+    <!-- Auto-process toggle: Set to "True" to enable automatic order processing.
+         Orders are queued and picked up by the "Process Queued Orders" cron
+         (within seconds via trigger; every 2 minutes as a fallback). -->
     <!--
     <record id="fulfillment_auto_process" model="ir.config_parameter">
         <field name="key">fulfillment.auto_process</field>
+        <field name="value">False</field>
+    </record>
+    -->
+
+    <!-- Shipping services to exclude from rate selection: comma-separated,
+         case-insensitive substrings matched against the Shippo service name. -->
+    <!--
+    <record id="fulfillment_excluded_services" model="ir.config_parameter">
+        <field name="key">fulfillment.excluded_services</field>
+        <field name="value">ground saver</field>
+    </record>
+    -->
+
+    <!-- Explicit Shopify shipping-line -> Shippo service mapping (JSON).
+         Checked before fuzzy matching, so known checkout options resolve
+         deterministically. -->
+    <!--
+    <record id="fulfillment_shipping_method_map" model="ir.config_parameter">
+        <field name="key">fulfillment.shipping_method_map</field>
+        <field name="value">{"Standard Shipping": "USPS Ground Advantage", "Express": "UPS 2nd Day Air"}</field>
+    </record>
+    -->
+
+    <!-- Allow the mock shipping API when no Shippo key is configured
+         (testing only; the mock creates fake labels and tracking numbers). -->
+    <!--
+    <record id="fulfillment_allow_mock_api" model="ir.config_parameter">
+        <field name="key">fulfillment.allow_mock_api</field>
         <field name="value">False</field>
     </record>
     -->

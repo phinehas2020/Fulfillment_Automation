@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- Processes orders queued by the webhook/import when
+         fulfillment.auto_process is enabled. The webhook triggers this cron
+         immediately after commit; the interval run is a safety net so queued
+         orders are never stranded if a trigger is lost. -->
+    <record id="ir_cron_process_queued_orders" model="ir.cron">
+        <field name="name">Shopify Fulfillment: Process Queued Orders</field>
+        <field name="model_id" ref="model_shopify_order"/>
+        <field name="state">code</field>
+        <field name="code">model.cron_process_queued_orders()</field>
+        <field name="interval_number">2</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="True"/>
+    </record>
+</odoo>

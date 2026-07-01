@@ -55,6 +55,14 @@ class PackedBox:
         """Get unique line IDs in this box."""
         return list(set(item.line_id for item in self.items))
 
+    @property
+    def line_quantities(self) -> dict:
+        """Units packed in this box per line ID (items are one unit each)."""
+        counts = {}
+        for item in self.items:
+            counts[item.line_id] = counts.get(item.line_id, 0) + item.quantity
+        return counts
+
 
 @dataclass
 class PackingResult:

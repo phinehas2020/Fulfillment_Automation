@@ -89,24 +89,70 @@ class ShopifyAPI:
             "shopify_fulfillment_id": "",
         }
 
-    def create_fulfillment(self, order, tracking_info: Dict[str, Any]):
+    def create_fulfillment(
+        self,
+        order,
+        tracking_info: Dict[str, Any],
+        line_items: Optional[List[Dict[str, Any]]] = None,
+    ):
         """
         Create a fulfillment in Shopify using the Fulfillment Orders API.
+
+        Args:
+            order: shopify.order record
+            tracking_info: dict with tracking_number/tracking_url/carrier
+            line_items: optional list of {"shopify_line_id": str, "quantity": int}
+                limiting the fulfillment to specific items (multi-box orders
+                create one fulfillment per box). When omitted, all open items
+                are fulfilled.
         """
-        # 1. Get Fulfillment Order ID
-        fo_id = self._get_fulfillment_order_id(order.shopify_id)
-        if not fo_id:
+        fulfillment_orders = self._get_fulfillable_orders(order.shopify_id)
+        if not fulfillment_orders:
             raise exceptions.UserError("No open fulfillment order found in Shopify.")
 
-        # 2. Create Fulfillment
+        if line_items:
+            wanted = {}
+            for item in line_items:
+                key = str(item.get("shopify_line_id") or "")
+                quantity = int(item.get("quantity") or 0)
+                if key and quantity > 0:
+                    wanted[key] = wanted.get(key, 0) + quantity
+
+            by_fulfillment_order = []
+            for fo in fulfillment_orders:
+                fo_lines = []
+                for fo_line in fo.get("line_items", []):
+                    key = str(fo_line.get("line_item_id") or "")
+                    remaining = wanted.get(key, 0)
+                    if remaining <= 0:
+                        continue
+                    fulfillable = int(fo_line.get("fulfillable_quantity") or 0)
+                    quantity = min(remaining, fulfillable)
+                    if quantity <= 0:
+                        continue
+                    fo_lines.append({"id": fo_line.get("id"), "quantity": quantity})
+                    wanted[key] = remaining - quantity
+                if fo_lines:
+                    by_fulfillment_order.append(
+                        {
+                            "fulfillment_order_id": fo.get("id"),
+                            "fulfillment_order_line_items": fo_lines,
+                        }
+                    )
+
+            if not by_fulfillment_order:
+                raise exceptions.UserError(
+                    "No fulfillable Shopify line items matched this shipment."
+                )
+        else:
+            # Fulfill all open items on the first fulfillable order.
+            by_fulfillment_order = [
+                {"fulfillment_order_id": fulfillment_orders[0].get("id")}
+            ]
+
         payload = {
             "fulfillment": {
-                "line_items_by_fulfillment_order": [
-                    {
-                        "fulfillment_order_id": fo_id,
-                        # Fulfill all open items by default
-                    }
-                ],
+                "line_items_by_fulfillment_order": by_fulfillment_order,
                 "tracking_info": {
                     "number": tracking_info.get("tracking_number"),
                     "url": tracking_info.get("tracking_url"),
@@ -115,26 +161,32 @@ class ShopifyAPI:
                 "notify_customer": True,
             }
         }
-        
+
         url = self._url("/fulfillments.json")
         resp = requests.post(url, headers=self._headers(), json=payload, timeout=30)
         if resp.status_code >= 400:
             raise exceptions.UserError(f"Fulfillment failed: {resp.text}")
         return resp.json()
 
-    def _get_fulfillment_order_id(self, shopify_order_id: str) -> Optional[int]:
-        """Fetch the first open fulfillment order ID for this order."""
+    def _get_fulfillable_orders(self, shopify_order_id: str) -> List[Dict[str, Any]]:
+        """Fetch fulfillment orders that still have items to fulfill.
+
+        Includes "in_progress" as well as "open": after the first box of a
+        multi-box order is fulfilled, Shopify moves the fulfillment order to
+        in_progress even though other items remain fulfillable.
+        """
         url = self._url(f"/orders/{shopify_order_id}/fulfillment_orders.json")
         resp = requests.get(url, headers=self._headers(), timeout=15)
         if resp.status_code != 200:
             _logger.error("Failed to fetch fulfillment orders: %s", resp.text)
-            return None
-        
+            return []
+
         data = resp.json()
-        for fo in data.get("fulfillment_orders", []):
-            if fo.get("status") == "open":
-                return fo.get("id")
-        return None
+        return [
+            fo
+            for fo in data.get("fulfillment_orders", [])
+            if fo.get("status") in ("open", "in_progress")
+        ]
 
     def get_orders(self, shopify_ids: List[str]) -> List[Dict[str, Any]]:
         """

@@ -18,6 +18,11 @@ class FulfillmentShipment(models.Model):
     rate_amount = fields.Float()
     rate_currency = fields.Char()
     shopify_fulfillment_id = fields.Char()
+    line_quantities = fields.Text(
+        help="JSON mapping of shopify.order.line ID to the number of units "
+        "packed in this box, so multi-box fulfillments can attach tracking "
+        "to the right items in Shopify.",
+    )
     shippo_transaction_id = fields.Char(string="Shippo Transaction ID", index=True)
     shippo_refund_id = fields.Char(string="Shippo Refund ID", readonly=True)
     refund_status = fields.Selection(

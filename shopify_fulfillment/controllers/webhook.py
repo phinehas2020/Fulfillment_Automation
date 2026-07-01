@@ -83,11 +83,16 @@ class ShopifyWebhookController(http.Controller):
             except Exception as partner_err:
                 _logger.warning("Failed to create partner for order %s: %s", order.id, partner_err)
 
-            # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process)
+            # Check if auto-processing is enabled (Settings → System Parameters → fulfillment.auto_process).
+            # Processing is queued for the cron rather than run inline: rate
+            # shopping and label purchase can take longer than the ~5 seconds
+            # Shopify allows a webhook response, and repeated timeouts get the
+            # webhook subscription dropped.
             auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
             if auto_process.lower() in ("true", "1", "yes"):
-                order.process_order()
-                _logger.info("Order %s auto-processed", order.id)
+                order.auto_process_queued = True
+                order.trigger_queued_processing_cron()
+                _logger.info("Order %s queued for auto-processing", order.id)
             else:
                 _logger.info("Order %s created (auto-process disabled)", order.id)
 

@@ -135,20 +135,7 @@ class PrintAgentController(http.Controller):
             if not remaining:
                 job.order_id.write({"state": "shipped"})
                 try:
-                    api = ShopifyAPI.from_env(request.env)
-                    shipment = job.shipment_id
-                    if shipment and not shipment.shopify_fulfillment_id and shipment.tracking_number:
-                        resp = api.create_fulfillment(
-                            job.order_id,
-                            {
-                                "tracking_number": shipment.tracking_number,
-                                "tracking_url": shipment.tracking_url,
-                                "carrier": shipment.carrier,
-                            },
-                        )
-                        fulfillment = resp.get("fulfillment") if isinstance(resp, dict) else None
-                        if fulfillment and fulfillment.get("id"):
-                            shipment.write({"shopify_fulfillment_id": fulfillment["id"]})
+                    self._push_fulfillments_to_shopify(job.order_id)
                 except Exception as exc:  # pylint: disable=broad-except
                     # Do not block completion if Shopify call fails
                     request.env["ir.logging"].sudo().create(
@@ -178,6 +165,66 @@ class PrintAgentController(http.Controller):
             json.dumps({"status": "ok"}),
             headers=[("Content-Type", "application/json")],
         )
+
+    def _push_fulfillments_to_shopify(self, order):
+        """Create a Shopify fulfillment for every shipment with tracking.
+
+        Multi-box orders get one fulfillment per box, scoped to that box's
+        line items, so every tracking number reaches the customer instead of
+        only the box whose label happened to print last.
+        """
+        if order.shipment_group_id:
+            shipments = order.shipment_group_id.shipment_ids
+        else:
+            shipments = order.shipment_id
+
+        shipments = shipments.filtered(
+            lambda s: s.tracking_number and not s.shopify_fulfillment_id
+        )
+        if not shipments:
+            return
+
+        api = ShopifyAPI.from_env(request.env)
+        multi_box = len(shipments) > 1
+        for shipment in shipments.sorted("sequence"):
+            line_items = self._shipment_line_items(shipment) if multi_box else None
+            resp = api.create_fulfillment(
+                order,
+                {
+                    "tracking_number": shipment.tracking_number,
+                    "tracking_url": shipment.tracking_url,
+                    "carrier": shipment.carrier,
+                },
+                line_items=line_items,
+            )
+            fulfillment = resp.get("fulfillment") if isinstance(resp, dict) else None
+            if fulfillment and fulfillment.get("id"):
+                shipment.write({"shopify_fulfillment_id": fulfillment["id"]})
+
+    @staticmethod
+    def _shipment_line_items(shipment):
+        """Build [{shopify_line_id, quantity}] for one box's contents."""
+        quantities = {}
+        if shipment.line_quantities:
+            try:
+                quantities = {
+                    int(line_id): int(quantity)
+                    for line_id, quantity in json.loads(shipment.line_quantities).items()
+                }
+            except (TypeError, ValueError):
+                quantities = {}
+
+        items = []
+        for line in shipment.line_ids:
+            if not line.shopify_line_id:
+                continue
+            items.append(
+                {
+                    "shopify_line_id": line.shopify_line_id,
+                    "quantity": quantities.get(line.id, line.quantity or 1),
+                }
+            )
+        return items
 
     @staticmethod
     def _is_authorized() -> bool:

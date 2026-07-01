@@ -58,6 +58,11 @@ class ShopifyOrder(models.Model):
         default="pending",
     )
     error_message = fields.Text()
+    auto_process_queued = fields.Boolean(
+        default=False,
+        help="Set when the order arrives with auto-processing enabled; the "
+        "processing cron picks these up so webhooks can return immediately.",
+    )
     source = fields.Selection(
         [("shopify", "Shopify"), ("amazon", "Amazon"), ("pos", "POS")],
         default="shopify",
@@ -1215,7 +1220,8 @@ class ShopifyOrder(models.Model):
         pos_synced_count = 0
         skipped_count = 0
         error_count = 0
-        
+        queued_any = False
+
         for order_data in shopify_orders:
             shopify_id = str(order_data.get("id"))
             source = self._source_from_payload(order_data)
@@ -1257,17 +1263,22 @@ class ShopifyOrder(models.Model):
                 except Exception as partner_err:
                     _logger.warning("Failed to create partner for order %s: %s", shopify_id, partner_err)
                 
-                # Check if auto-processing is enabled
+                # Check if auto-processing is enabled; queue for the cron so
+                # a large import doesn't block on Shippo calls per order.
                 ICP = self.env["ir.config_parameter"].sudo()
                 auto_process = ICP.get_param("fulfillment.auto_process", "False")
                 if auto_process.lower() in ("true", "1", "yes"):
-                    order.process_order()
-                    _logger.info("Order %s auto-processed", order.id)
+                    order.auto_process_queued = True
+                    queued_any = True
+                    _logger.info("Order %s queued for auto-processing", order.id)
                     
             except Exception as e:
                 _logger.exception("Failed to import order %s: %s", shopify_id, e)
                 error_count += 1
         
+        if queued_any:
+            self.trigger_queued_processing_cron()
+
         message = (
             "Shopify Sync Complete:\n"
             f"Imported: {imported_count}\n"
@@ -1358,6 +1369,46 @@ class ShopifyOrder(models.Model):
     def action_process(self):
         for order in self:
             order.process_order()
+
+    @api.model
+    def trigger_queued_processing_cron(self):
+        """Ask the processing cron to run right after this transaction commits."""
+        try:
+            cron = self.env.ref(
+                "shopify_fulfillment.ir_cron_process_queued_orders",
+                raise_if_not_found=False,
+            )
+            if cron:
+                cron.sudo()._trigger()
+        except Exception:  # pylint: disable=broad-except
+            # The scheduled interval run will pick the order up regardless.
+            _logger.exception("Failed to trigger queued-order processing cron")
+
+    @api.model
+    def cron_process_queued_orders(self, limit=20):
+        """Process orders queued by the webhook when auto-processing is on.
+
+        The webhook only flags the order and returns immediately (Shopify
+        expects a response within ~5 seconds); the actual rate shopping and
+        label purchasing happens here.
+        """
+        orders = self.search(
+            [
+                ("state", "=", "pending"),
+                ("auto_process_queued", "=", True),
+                ("source", "!=", "pos"),
+            ],
+            limit=limit,
+        )
+        if not orders:
+            return
+        _logger.info("Cron: processing %d queued order(s)", len(orders))
+        orders.process_order()
+        # process_order moves orders out of "pending" (ready/manual/error);
+        # clear the queue flag on those so state resets don't re-trigger.
+        processed = orders.filtered(lambda o: o.state != "pending")
+        if processed:
+            processed.write({"auto_process_queued": False})
 
     def action_reset_and_reprocess(self):
         """Reset fulfillment artifacts and re-run processing."""
@@ -1640,8 +1691,17 @@ class ShopifyOrder(models.Model):
         if self.shipment_group_id:
             group = self.shipment_group_id
             shipments_with_labels = group.shipment_ids.filtered(lambda s: s.label_zpl)
+            # Only take the reprint shortcut when the previous run finished
+            # every box; a mid-run failure leaves group.state != "complete"
+            # with labels for only some boxes, and reprinting just those
+            # would ship the order incomplete.
+            group_is_complete = (
+                group.state == "complete"
+                and shipments_with_labels
+                and len(shipments_with_labels) == len(group.shipment_ids)
+            )
 
-            if shipments_with_labels:
+            if group_is_complete:
                 # Re-print existing labels
                 for shipment in shipments_with_labels:
                     self.env["print.job"].create({
@@ -1654,8 +1714,24 @@ class ShopifyOrder(models.Model):
                 self.write({"state": "ready_to_ship"})
                 return
             else:
-                # Previous processing failed - delete empty/failed group and reprocess
-                _logger.info("Order %s: Deleting failed shipment group %s to reprocess", self.id, group.id)
+                # Previous processing failed or stopped partway. Refund any
+                # labels that were purchased, drop their queued print jobs,
+                # then rebuild the whole group from scratch.
+                _logger.info(
+                    "Order %s: Shipment group %s is incomplete (state=%s, %d/%d labeled); "
+                    "refunding and reprocessing",
+                    self.id,
+                    group.id,
+                    group.state,
+                    len(shipments_with_labels),
+                    len(group.shipment_ids),
+                )
+                self._request_shippo_refunds_for_shipments(group.shipment_ids)
+                stale_jobs = self.print_job_ids.filtered(
+                    lambda j: j.shipment_id in group.shipment_ids
+                )
+                if stale_jobs:
+                    stale_jobs.sudo().unlink()
                 group.shipment_ids.unlink()
                 group.unlink()
                 self.shipment_group_id = False
@@ -1732,6 +1808,17 @@ class ShopifyOrder(models.Model):
         # Update group state
         group.write({"state": "complete"})
 
+        # Queue print jobs only after every box purchased successfully, so a
+        # mid-run failure never prints labels for a partially processed order.
+        for shipment in shipments_created:
+            self.env["print.job"].create({
+                "order_id": self.id,
+                "shipment_id": shipment.id,
+                "job_type": "label",
+                "zpl_data": shipment.label_zpl or "",
+                "printer_id": False,
+            })
+
         # Backward compatibility: set shipment_id and box_id to first shipment
         if shipments_created:
             self.shipment_id = shipments_created[0].id
@@ -1739,45 +1826,6 @@ class ShopifyOrder(models.Model):
 
         _logger.info("Order %s: Created %d shipments (multi-box)", self.id, len(shipments_created))
         self.write({"state": "ready_to_ship"})
-
-    def _select_box(self) -> Optional[models.Model]:
-        boxes = self.env["fulfillment.box"].search([("active", "=", True)])
-        if not boxes:
-            return None
-
-        # Basic heuristic: assume density ~ 9 g per cubic inch (approx for flour/grains)
-        estimated_volume = self.total_weight / 9.0 if self.total_weight else 0
-
-        data = [
-            {
-                "id": b.id,
-                "length": b.length,
-                "width": b.width,
-                "height": b.height,
-                "max_weight": b.max_weight,
-                "box_weight": b.box_weight,
-                "volume": b.volume,
-                "priority": b.priority,
-            }
-            for b in boxes
-        ]
-        
-        from odoo.addons.shopify_fulfillment.services import box_selector
-        selected_id = box_selector.select_box(data, self.total_weight, estimated_volume)
-        
-        if not selected_id:
-            msg = f"No box fits. Wt: {self.total_weight}g, Est.Vol: {int(estimated_volume)}in³"
-            _logger.warning("Order %s: %s", self.id, msg)
-            self.write({"state": "manual_required", "error_message": msg})
-            return None
-            
-        return boxes.browse(selected_id)
-
-    def _estimate_volume(self) -> float:
-        # Deprecated: logic moved inside _select_box for now.
-        if self.total_weight:
-            return max(self.total_weight / 9.0, 1.0)
-        return 1.0
 
     def _pack_order_multi_box(self):
         """Run multi-box packing algorithm.
@@ -1856,12 +1904,23 @@ class ShopifyOrder(models.Model):
                 sender_company=self.env.company,
             )
 
-            # Filter out excluded shipping services
+            # Filter out excluded shipping services (comma-separated substrings)
+            excluded_raw = self.env["ir.config_parameter"].sudo().get_param(
+                "fulfillment.excluded_services", "ground saver"
+            )
+            excluded_terms = [
+                term.strip().lower()
+                for term in (excluded_raw or "").split(",")
+                if term.strip()
+            ]
             original_count = len(rates)
             rates = [
                 r
                 for r in rates
-                if "ground saver" not in (r.get("servicelevel", {}).get("name") or "").lower()
+                if not any(
+                    term in (r.get("servicelevel", {}).get("name") or "").lower()
+                    for term in excluded_terms
+                )
             ]
             if original_count != len(rates):
                 _logger.info(
@@ -1924,7 +1983,17 @@ class ShopifyOrder(models.Model):
                             self.id, sequence
                         )
         else:
-            # Fallback to Mock API (for testing)
+            # No Shippo key configured. Only fall back to the mock API when
+            # explicitly enabled for testing; otherwise stop rather than
+            # "shipping" with fake labels and fake tracking numbers.
+            allow_mock = self.env["ir.config_parameter"].sudo().get_param(
+                "fulfillment.allow_mock_api", "False"
+            )
+            if allow_mock.lower() not in ("true", "1", "yes"):
+                raise exceptions.UserError(
+                    f"Box {sequence}: Shippo API key is not configured. Set "
+                    "shippo.api_key (or enable fulfillment.allow_mock_api for testing)."
+                )
             api_client = self._get_shopify_api()
             rates = api_client.get_shipping_rates(self)
             if not rates:
@@ -1939,13 +2008,16 @@ class ShopifyOrder(models.Model):
         if shipment_vals.get("error"):
             raise exceptions.UserError(f"Box {sequence}: {shipment_vals['error']}")
 
-        # Create shipment record
+        # Create shipment record. Per-line unit counts are persisted so the
+        # Shopify fulfillment push can attach each box's tracking number to
+        # exactly the items that shipped in that box.
         shipment = self.env["fulfillment.shipment"].create({
             "order_id": self.id,
             "group_id": group.id,
             "box_id": box_record.id,
             "sequence": sequence,
             "line_ids": [(6, 0, line_ids)],
+            "line_quantities": json.dumps(packed_box.line_quantities),
             "total_weight": packed_box.total_weight_with_box,
             "shippo_transaction_id": shipment_vals.get("shippo_transaction_id"),
             "carrier": shipment_vals.get("carrier"),
@@ -1957,15 +2029,6 @@ class ShopifyOrder(models.Model):
             "rate_amount": shipment_vals.get("rate_amount"),
             "rate_currency": shipment_vals.get("rate_currency"),
             "purchased_at": fields.Datetime.now(),
-        })
-
-        # Create print job
-        self.env["print.job"].create({
-            "order_id": self.id,
-            "shipment_id": shipment.id,
-            "job_type": "label",
-            "zpl_data": shipment.label_zpl or "",
-            "printer_id": False,
         })
 
         # Log rate audit row (top-3 cheapest vs. selected) for weekly review.
@@ -2077,6 +2140,38 @@ class ShopifyOrder(models.Model):
             return 0
         return len(left_tokens.intersection(right_tokens))
 
+    def _configured_shipping_method_target(self, normalized_request: str) -> Optional[str]:
+        """Look up the requested method in fulfillment.shipping_method_map.
+
+        The parameter is a JSON object mapping Shopify shipping-line titles
+        to Shippo service names, e.g.
+        {"Standard Shipping": "USPS Ground Advantage"}. Both sides are
+        normalized before comparison.
+        """
+        if not normalized_request:
+            return None
+        raw_map = self.env["ir.config_parameter"].sudo().get_param(
+            "fulfillment.shipping_method_map"
+        )
+        if not raw_map:
+            return None
+        try:
+            mapping = json.loads(raw_map)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "fulfillment.shipping_method_map is not valid JSON; ignoring."
+            )
+            return None
+        if not isinstance(mapping, dict):
+            _logger.warning(
+                "fulfillment.shipping_method_map must be a JSON object; ignoring."
+            )
+            return None
+        for key, value in mapping.items():
+            if self._normalize_shipping_text(str(key)) == normalized_request:
+                return self._normalize_shipping_text(str(value)) or None
+        return None
+
     def _requested_shipping_context(self) -> dict:
         snippets = [self.requested_shipping_method or ""]
         if self.raw_payload:
@@ -2155,12 +2250,34 @@ class ShopifyOrder(models.Model):
 
             candidate_pool = provider_rates or enriched_rates
 
-            # Highest-confidence match first: exact normalized match.
+            # Highest-confidence match first: explicit config mapping
+            # (fulfillment.shipping_method_map), so known shipping options
+            # resolve deterministically without fuzzy matching.
+            mapped_matches = []
+            mapped_target = self._configured_shipping_method_target(req_norm)
+            if mapped_target:
+                mapped_matches = [
+                    item for item in candidate_pool
+                    if item["service"] == mapped_target
+                    or mapped_target in item["combined"]
+                ]
+                if not mapped_matches:
+                    _logger.warning(
+                        "Order %s: Configured mapping '%s' -> '%s' matched no rates; "
+                        "falling back to fuzzy matching.",
+                        self.id,
+                        req_norm,
+                        mapped_target,
+                    )
+
+            # Next: exact normalized match.
             exact_matches = [
                 item for item in candidate_pool
                 if item["service"] == req_norm or item["combined"] == req_norm
             ]
-            if exact_matches:
+            if mapped_matches:
+                selected_rate = sorted(mapped_matches, key=lambda item: item["amount"])[0]["rate"]
+            elif exact_matches:
                 selected_rate = sorted(exact_matches, key=lambda item: item["amount"])[0]["rate"]
             else:
                 # Next best: phrase containment.

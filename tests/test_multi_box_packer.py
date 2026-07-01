@@ -99,6 +99,24 @@ class MultiBoxPackerTest(unittest.TestCase):
                 packed_box.box_spec.max_weight_grams,
             )
 
+    def test_line_quantities_track_units_per_box_when_lines_split(self):
+        boxes = [box(1, "Small (5lb)", 80, 3, 440, 10)]
+        # Six 1lb units on one line: too heavy for a single 5lb box, so the
+        # line must split across boxes and per-box unit counts must add up.
+        items = [PackableItem(line_id=42, sku="FLOUR", weight_grams=454, quantity=6)]
+
+        result = MultiBoxPacker(items, boxes).pack()
+
+        self.assertTrue(result.success)
+        self.assertGreater(result.box_count, 1)
+        total_units = 0
+        for packed_box in result.packed_boxes:
+            quantities = packed_box.line_quantities
+            self.assertEqual(list(quantities.keys()), [42])
+            self.assertEqual(quantities[42], len(packed_box.items))
+            total_units += quantities[42]
+        self.assertEqual(total_units, 6)
+
 
 if __name__ == "__main__":
     unittest.main()
