@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 import requests
 import json
 from odoo import exceptions
@@ -17,8 +18,14 @@ def sanitize_phone(phone: str) -> str:
     if not phone:
         return ""
     
-    # Remove extension patterns: "ext. 123", "ext 123", "x123", "extension 123", etc.
-    phone = re.sub(r'\s*(ext\.?|extension|x)\s*\d+.*$', '', phone, flags=re.IGNORECASE)
+    # Remove extension patterns, including punctuation used by marketplaces:
+    # "ext. 123", "ext: 123", "ext. #123", "x123", "extension 123", etc.
+    phone = re.sub(
+        r'\s*(?:ext(?:ension)?\.?|x)\s*[:.#-]?\s*\d+.*$',
+        '',
+        phone,
+        flags=re.IGNORECASE,
+    )
     
     # Keep only digits, spaces, dashes, parentheses, and plus sign
     phone = re.sub(r'[^\d\s\-\(\)\+]', '', phone)
@@ -30,6 +37,8 @@ def sanitize_phone(phone: str) -> str:
 
 class ShippoService:
     API_URL = "https://api.goshippo.com"
+    RATE_REQUEST_ATTEMPTS = 3
+    TRANSIENT_RATE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
     def __init__(self, api_key: str, shipper_phone: str = None):
         self.api_key = api_key
@@ -50,6 +59,53 @@ class ShippoService:
             "Authorization": f"ShippoToken {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    def _post_rate_request(self, url, payload):
+        """Create a rate shipment, retrying only transient Shippo failures.
+
+        Shipment creation does not purchase postage, so retrying it cannot buy
+        duplicate labels. Label transactions intentionally remain single-shot.
+        """
+        for attempt in range(1, self.RATE_REQUEST_ATTEMPTS + 1):
+            try:
+                response = requests.post(
+                    url,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=15,
+                )
+            except requests.RequestException:
+                if attempt == self.RATE_REQUEST_ATTEMPTS:
+                    raise
+                delay = attempt
+                _logger.warning(
+                    "Shippo rate request failed on attempt %s/%s; retrying in %ss",
+                    attempt,
+                    self.RATE_REQUEST_ATTEMPTS,
+                    delay,
+                    exc_info=True,
+                )
+                time.sleep(delay)
+                continue
+
+            if (
+                response.status_code not in self.TRANSIENT_RATE_STATUS_CODES
+                or attempt == self.RATE_REQUEST_ATTEMPTS
+            ):
+                return response
+
+            delay = attempt
+            _logger.warning(
+                "Shippo rate request returned transient HTTP %s on attempt %s/%s; "
+                "retrying in %ss",
+                response.status_code,
+                attempt,
+                self.RATE_REQUEST_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
+
+        raise RuntimeError("Shippo rate request exhausted without a response")
 
     def get_rates(self, order, box, sender_company):
         url = f"{self.API_URL}/shipments"
@@ -122,7 +178,7 @@ class ShippoService:
         _logger.info("Shippo: Parcel: %sx%sx%s in, %s g", parcel["length"], parcel["width"], parcel["height"], parcel["weight"])
         
         try:
-            resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            resp = self._post_rate_request(url, payload)
             _logger.info("Shippo: Response status: %s", resp.status_code)
             
             if resp.status_code >= 400:
@@ -233,7 +289,7 @@ class ShippoService:
         )
 
         try:
-            resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            resp = self._post_rate_request(url, payload)
             _logger.info("Shippo: Response status: %s", resp.status_code)
 
             if resp.status_code >= 400:
