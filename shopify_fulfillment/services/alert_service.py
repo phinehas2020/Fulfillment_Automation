@@ -122,7 +122,12 @@ class AlertService:
             return False
 
         payload = {
-            "text": f"{subject}\n\n{body_text}",
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "summary": subject,
+            "themeColor": "D13438",
+            "title": subject,
+            "text": body_text,
         }
         try:
             resp = requests.post(webhook_url, json=payload, timeout=10)
