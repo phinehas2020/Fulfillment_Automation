@@ -357,7 +357,18 @@ class ShopifyRestockItem(models.Model):
                 "location_dest_id": dest_location.id,
                 "company_id": move.company_id.id,
             })
+        # Odoo 18 only completes stock moves that are explicitly picked.
+        # Without this flag _action_done() silently leaves the move assigned,
+        # while the restock item is incorrectly marked transferred.
+        if "picked" in move._fields:
+            move.picked = True
+            move.move_line_ids.picked = True
         move._action_done()
+        move.invalidate_recordset(["state"])
+        if move.state != "done":
+            raise RuntimeError(
+                f"Stock move {move.id} did not complete (state: {move.state})."
+            )
         return move
 
     def action_transfer_inventory(self):
