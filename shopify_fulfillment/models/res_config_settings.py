@@ -64,6 +64,11 @@ class ResConfigSettings(models.TransientModel):
         help="Warehouse location to pull stock from when a restock task is marked done. "
              "Falls back to the Online Fulfillment Source Location if blank.",
     )
+    fulfillment_restock_shopify_source_location_id = fields.Char(
+        config_parameter='fulfillment.restock_shopify_source_location_id',
+        string="Restock Shopify Source Location ID",
+        help="Numeric Shopify Fulfillment location deducted when a restock task is done.",
+    )
 
     def set_values(self):
         super().set_values()

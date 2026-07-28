@@ -31,6 +31,10 @@ class ShopifyConfigWizard(models.TransientModel):
     fulfillment_restock_source_location_id = fields.Many2one(
         'stock.location', string="Restock Source Location"
     )
+    fulfillment_restock_shopify_source_location_id = fields.Char(
+        string="Restock Shopify Source Location ID",
+        help="Numeric Shopify Fulfillment location deducted when a restock task is done.",
+    )
 
     def _get_param_as_int(self, key):
         """Safely retrieve a config parameter as an int > 0, or False."""
@@ -69,6 +73,9 @@ class ShopifyConfigWizard(models.TransientModel):
             'fulfillment_restock_source_location_id': self._get_param_as_int(
                 'fulfillment.restock_source_location_id'
             ),
+            'fulfillment_restock_shopify_source_location_id': ICP.get_param(
+                'fulfillment.restock_shopify_source_location_id', ''
+            ),
         })
         return res
 
@@ -95,6 +102,10 @@ class ShopifyConfigWizard(models.TransientModel):
         ICP.set_param(
             'fulfillment.restock_source_location_id',
             str(self.fulfillment_restock_source_location_id.id or ''),
+        )
+        ICP.set_param(
+            'fulfillment.restock_shopify_source_location_id',
+            self.fulfillment_restock_shopify_source_location_id or '',
         )
 
         return {

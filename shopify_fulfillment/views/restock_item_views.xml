@@ -4,7 +4,10 @@
         <field name="name">fulfillment.restock.item.tree</field>
         <field name="model">fulfillment.restock.item</field>
         <field name="arch" type="xml">
-            <list string="Restock Items" decoration-success="inventory_transferred" decoration-muted="not is_active_snapshot">
+            <list string="Restock Items"
+                  decoration-success="inventory_transferred and not inventory_transfer_error"
+                  decoration-danger="inventory_transfer_error"
+                  decoration-muted="not is_active_snapshot">
                 <field name="create_date"/>
                 <field name="product_title"/>
                 <field name="variant_title"/>
@@ -17,6 +20,7 @@
                 <field name="source_pos_order_id"/>
                 <field name="is_active_snapshot"/>
                 <field name="inventory_transferred"/>
+                <field name="inventory_transfer_error" optional="show"/>
             </list>
         </field>
     </record>

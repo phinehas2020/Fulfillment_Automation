@@ -12,6 +12,8 @@ from typing import Any, List
 
 from odoo import api, fields, models
 
+from ..services.shopify_api import ShopifyAPI
+
 _logger = logging.getLogger(__name__)
 
 
@@ -324,6 +326,24 @@ class ShopifyRestockItem(models.Model):
         location = self.env["stock.location"].sudo().browse(location_id)
         return location if location.exists() else self.env["stock.location"].sudo()
 
+    def _get_shopify_source_location_id(self):
+        """Return the Shopify Fulfillment location used as the restock source."""
+        self.ensure_one()
+        ICP = self.env["ir.config_parameter"].sudo()
+        for key in (
+            "fulfillment.restock_shopify_source_location_id",
+            "odoo_shopify_restock.source_location_id_numeric",
+        ):
+            raw = (ICP.get_param(key) or "").strip()
+            if raw:
+                return raw.split("/")[-1]
+        return ""
+
+    def _get_shopify_destination_location_id(self):
+        """Return the Shopify retail location captured by the POS restock task."""
+        self.ensure_one()
+        return (self.shopify_location_id or "").strip().split("/")[-1]
+
     def _create_inventory_move(self, product, quantity, source_location, dest_location):
         self.ensure_one()
         move_vals = {
@@ -371,6 +391,37 @@ class ShopifyRestockItem(models.Model):
             )
         return move
 
+    def _transfer_quantity_in_shopify(self, quantity):
+        """Move the same quantity from Shopify Fulfillment to Shopify Retail."""
+        self.ensure_one()
+        source_location_id = self._get_shopify_source_location_id()
+        destination_location_id = self._get_shopify_destination_location_id()
+        variant_id = (self.variant_id_global or "").strip()
+        missing = [
+            label
+            for label, value in (
+                ("Shopify source location", source_location_id),
+                ("Shopify destination location", destination_location_id),
+                ("Shopify variant", variant_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Cannot update Shopify; missing " + ", ".join(missing) + "."
+            )
+
+        reference_uri = (
+            f"gid://homestead-gristmill/FulfillmentRestockItem/{self.id}"
+        )
+        return ShopifyAPI.from_env(self.env).transfer_available_inventory(
+            variant_id=variant_id,
+            quantity=quantity,
+            source_location_id=source_location_id,
+            destination_location_id=destination_location_id,
+            reference_uri=reference_uri,
+        )
+
     def action_transfer_inventory(self):
         """Move recommended qty from warehouse to POS retail when task completes."""
         for item in self:
@@ -408,10 +459,40 @@ class ShopifyRestockItem(models.Model):
                         " in Shopify Settings.",
                 })
                 continue
-            try:
-                move = item._create_inventory_move(
-                    product, qty, source_location, dest_location
+            if source_location == dest_location:
+                item.sudo().write({
+                    "inventory_transfer_error":
+                        "Odoo source and destination locations must be different.",
+                })
+                _logger.error(
+                    "Odoo source and destination are identical for restock item %s",
+                    item.id,
                 )
+                continue
+            available_qty = self.env["stock.quant"].sudo()._get_available_quantity(
+                product, source_location
+            )
+            if available_qty < qty:
+                item.sudo().write({
+                    "inventory_transfer_error": (
+                        f"Odoo Fulfillment has {available_qty:g} available, "
+                        f"but {qty} are required."
+                    ),
+                })
+                _logger.warning(
+                    "Insufficient Odoo source inventory for restock item %s: "
+                    "%s available, %s required",
+                    item.id,
+                    available_qty,
+                    qty,
+                )
+                continue
+            try:
+                with self.env.cr.savepoint():
+                    move = item._create_inventory_move(
+                        product, qty, source_location, dest_location
+                    )
+                    shopify_transfer = item._transfer_quantity_in_shopify(qty)
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception(
                     "Restock inventory transfer failed for item %s", item.id
@@ -433,6 +514,17 @@ class ShopifyRestockItem(models.Model):
                 "superseded_reason": "transferred",
             })
             _logger.info(
-                "Restock transfer complete: %s units of %s -> %s (item %s, move %s)",
-                qty, product.display_name, dest_location.display_name, item.id, move.id,
+                "Restock transfer complete: %s units of %s, Odoo %s -> %s "
+                "(item %s, move %s); Shopify Fulfillment %s -> %s, "
+                "Retail %s -> %s",
+                qty,
+                product.display_name,
+                source_location.complete_name,
+                dest_location.complete_name,
+                item.id,
+                move.id,
+                shopify_transfer["source_before"],
+                shopify_transfer["source_after"],
+                shopify_transfer["destination_before"],
+                shopify_transfer["destination_after"],
             )

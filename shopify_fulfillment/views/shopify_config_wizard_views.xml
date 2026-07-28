@@ -37,6 +37,8 @@
                         <field name="fulfillment_restock_project_id"
                                options="{'no_create': True, 'no_create_edit': True}"/>
                         <field name="fulfillment_restock_source_location_id"/>
+                        <field name="fulfillment_restock_shopify_source_location_id"
+                               placeholder="79621390578"/>
                     </group>
                 </sheet>
                 <footer>
