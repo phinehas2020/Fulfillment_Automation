@@ -98,3 +98,32 @@ class TestShopifyInventoryTransfer(BaseCase):
             )
 
         mock_post.assert_not_called()
+
+    @patch.object(shopify_api.requests, "post")
+    @patch.object(shopify_api.requests, "get")
+    def test_destination_mismatch_blocks_adjustment(self, mock_get, mock_post):
+        mock_get.side_effect = [
+            self._response({"variant": {"inventory_item_id": 999}}),
+            self._response({
+                "inventory_levels": [
+                    {"location_id": 101, "available": 20},
+                    {"location_id": 202, "available": 4},
+                ],
+            }),
+        ]
+        api = ShopifyAPI("example.myshopify.com", "token", "2026-01")
+
+        with self.assertRaisesRegex(
+            exceptions.UserError,
+            "Shopify Retail would become 7, but Odoo Retail currently has 9",
+        ):
+            api.transfer_available_inventory(
+                variant_id="55",
+                quantity=3,
+                source_location_id="101",
+                destination_location_id="202",
+                reference_uri="gid://test/Restock/7",
+                expected_destination_after=9,
+            )
+
+        mock_post.assert_not_called()

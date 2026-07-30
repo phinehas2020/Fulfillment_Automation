@@ -467,6 +467,7 @@ class ShopifyAPI:
         source_location_id: str,
         destination_location_id: str,
         reference_uri: str,
+        expected_destination_after: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Atomically deduct available stock at source and add it at destination.
 
@@ -558,6 +559,20 @@ class ShopifyAPI:
                 f"Shopify Fulfillment has {source_before} available, "
                 f"but {quantity} are required."
             )
+        if expected_destination_after is not None:
+            try:
+                expected_destination_after = int(expected_destination_after)
+            except (TypeError, ValueError) as exc:
+                raise exceptions.UserError(
+                    "Expected Shopify destination quantity must be an integer."
+                ) from exc
+            destination_after = destination_before + quantity
+            if destination_after != expected_destination_after:
+                raise exceptions.UserError(
+                    f"Shopify Retail would become {destination_after}, but Odoo "
+                    f"Retail currently has {expected_destination_after}. "
+                    "No inventory adjustment was sent."
+                )
 
         mutation = """
             mutation AdjustFulfillmentRestockInventory(

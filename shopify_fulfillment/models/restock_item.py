@@ -417,7 +417,12 @@ class ShopifyRestockItem(models.Model):
             )
         return move
 
-    def _transfer_quantity_in_shopify(self, quantity, reference_uri=None):
+    def _transfer_quantity_in_shopify(
+        self,
+        quantity,
+        reference_uri=None,
+        expected_destination_after=None,
+    ):
         """Move the same quantity from Shopify Fulfillment to Shopify Retail."""
         self.ensure_one()
         source_location_id = self._get_shopify_source_location_id()
@@ -446,6 +451,7 @@ class ShopifyRestockItem(models.Model):
             source_location_id=source_location_id,
             destination_location_id=destination_location_id,
             reference_uri=reference_uri,
+            expected_destination_after=expected_destination_after,
         )
 
     def _reconcile_missing_shopify_transfer(self):
@@ -501,12 +507,78 @@ class ShopifyRestockItem(models.Model):
                 f"{destination_location.complete_name}."
             )
 
+        rounding = product.uom_id.rounding
+        odoo_destination_qty = self.env["stock.quant"].sudo()._get_available_quantity(
+            product, destination_location
+        )
+        shopify_api = ShopifyAPI.from_env(self.env)
+        inventory_item_id = shopify_api.get_variant_inventory_item_id(
+            self.variant_id_global
+        )
+        shopify_destination_qty = shopify_api.get_available_inventory_quantity(
+            inventory_item_id, self._get_shopify_destination_location_id()
+        )
+        if not float_compare(
+            odoo_destination_qty,
+            shopify_destination_qty,
+            precision_rounding=rounding,
+        ):
+            self.sudo().write({
+                "inventory_transfer_error": False,
+                "inventory_transferred_by":
+                    self.env.context.get("transferred_by_uid") or self.env.user.id,
+            })
+            message = (
+                "Shopify inventory reconciliation required no adjustment: "
+                f"Odoo Retail and Shopify Retail already both have "
+                f"{odoo_destination_qty:g} units of [{self.sku or ''}] "
+                f"{self.product_title or ''}."
+            )
+            if self.todo_task_id:
+                try:
+                    self.todo_task_id.sudo().message_post(body=message)
+                except Exception:  # pylint: disable=broad-except
+                    _logger.exception(
+                        "Restock item %s matched Shopify, but its task note failed",
+                        self.id,
+                    )
+            _logger.info(
+                "Restock Shopify reconciliation skipped for item %s: "
+                "Odoo Retail and Shopify Retail already match at %s",
+                self.id,
+                odoo_destination_qty,
+            )
+            return {
+                "skipped": True,
+                "destination_before": int(shopify_destination_qty),
+                "destination_after": int(shopify_destination_qty),
+            }
+
+        expected_destination_after = int(round(odoo_destination_qty))
+        if float_compare(
+            odoo_destination_qty,
+            expected_destination_after,
+            precision_rounding=rounding,
+        ):
+            raise RuntimeError(
+                f"Odoo Retail quantity {odoo_destination_qty:g} is not a whole unit."
+            )
+        projected_destination = int(shopify_destination_qty) + qty
+        if projected_destination != expected_destination_after:
+            raise RuntimeError(
+                f"Shopify Retail would become {projected_destination} after adding "
+                f"{qty}, but Odoo Retail currently has "
+                f"{expected_destination_after}. No adjustment was sent."
+            )
+
         reference_uri = (
             "gid://homestead-gristmill/"
             f"FulfillmentRestockReconciliation/{self.id}"
         )
         shopify_transfer = self._transfer_quantity_in_shopify(
-            qty, reference_uri=reference_uri
+            qty,
+            reference_uri=reference_uri,
+            expected_destination_after=expected_destination_after,
         )
         self.sudo().write({
             "inventory_transfer_error": False,

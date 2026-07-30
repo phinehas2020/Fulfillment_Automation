@@ -20,6 +20,7 @@ class TestRestockShopifyReconciliation(TransactionCase):
         self.product = self.env["product.product"].create({
             "name": "TEST Restock Reconciliation Product",
             "default_code": "TEST-RESTOCK-RECONCILIATION",
+            "is_storable": True,
         })
         self.move = self.env["stock.move"].create({
             "name": "TEST completed restock move",
@@ -56,6 +57,9 @@ class TestRestockShopifyReconciliation(TransactionCase):
         params.set_param(
             "fulfillment.restock_shopify_source_location_id", "101"
         )
+        self.env["stock.quant"].sudo()._update_available_quantity(
+            self.product, self.destination, 5
+        )
 
     @staticmethod
     def _shopify_result():
@@ -68,6 +72,8 @@ class TestRestockShopifyReconciliation(TransactionCase):
 
     def test_done_retry_reconciles_shopify_without_second_odoo_move(self):
         api = Mock()
+        api.get_variant_inventory_item_id.return_value = "999"
+        api.get_available_inventory_quantity.return_value = 2
         api.transfer_available_inventory.return_value = self._shopify_result()
         move_count = self.env["stock.move"].search_count([])
 
@@ -87,6 +93,7 @@ class TestRestockShopifyReconciliation(TransactionCase):
                 "gid://homestead-gristmill/"
                 f"FulfillmentRestockReconciliation/{self.item.id}"
             ),
+            expected_destination_after=5,
         )
 
     def test_mismatched_existing_move_blocks_shopify(self):
@@ -98,4 +105,18 @@ class TestRestockShopifyReconciliation(TransactionCase):
 
         api.transfer_available_inventory.assert_not_called()
         self.assertIn("moved 3, not 4", self.item.inventory_transfer_error)
+        self.assertEqual(self.item.inventory_move_id, self.move)
+
+    def test_matching_retail_quantity_clears_error_without_shopify_adjustment(self):
+        api = Mock()
+        api.get_variant_inventory_item_id.return_value = "999"
+        api.get_available_inventory_quantity.return_value = 5
+        move_count = self.env["stock.move"].search_count([])
+
+        with patch.object(ShopifyAPI, "from_env", return_value=api):
+            self.task.write({"state": "1_done"})
+
+        self.assertEqual(self.env["stock.move"].search_count([]), move_count)
+        api.transfer_available_inventory.assert_not_called()
+        self.assertFalse(self.item.inventory_transfer_error)
         self.assertEqual(self.item.inventory_move_id, self.move)
