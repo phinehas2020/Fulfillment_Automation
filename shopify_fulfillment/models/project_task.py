@@ -248,11 +248,16 @@ class ProjectTask(models.Model):
                     continue
                 if not task._restock_task_is_done():
                     continue
-                items = self.env["fulfillment.restock.item"].sudo().search([
+                item_model = self.env["fulfillment.restock.item"].sudo()
+                items = item_model.search([
                     ("todo_task_id", "=", task.id),
                     ("is_active_snapshot", "=", True),
                     ("inventory_transferred", "=", False),
                 ])
+                items |= item_model.search(
+                    [("todo_task_id", "=", task.id)]
+                    + item_model._shopify_reconciliation_domain()
+                )
                 if (
                     not items
                     and task.fulfillment_restock_item_id

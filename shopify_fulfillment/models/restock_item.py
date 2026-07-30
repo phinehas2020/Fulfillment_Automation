@@ -11,10 +11,13 @@ import logging
 from typing import Any, List
 
 from odoo import api, fields, models
+from odoo.tools.float_utils import float_compare
 
 from ..services.shopify_api import ShopifyAPI
 
 _logger = logging.getLogger(__name__)
+
+HISTORICAL_SHOPIFY_MISSING_PREFIX = "Historical Shopify update missing:"
 
 
 class ShopifyRestockItem(models.Model):
@@ -344,6 +347,29 @@ class ShopifyRestockItem(models.Model):
         self.ensure_one()
         return (self.shopify_location_id or "").strip().split("/")[-1]
 
+    @api.model
+    def _shopify_reconciliation_domain(self):
+        """Records whose Odoo move finished before paired Shopify transfers existed."""
+        return [
+            ("inventory_transferred", "=", True),
+            ("inventory_move_id", "!=", False),
+            (
+                "inventory_transfer_error",
+                "=like",
+                f"{HISTORICAL_SHOPIFY_MISSING_PREFIX}%",
+            ),
+        ]
+
+    def _needs_shopify_reconciliation(self):
+        self.ensure_one()
+        return bool(
+            self.inventory_transferred
+            and self.inventory_move_id
+            and (self.inventory_transfer_error or "").startswith(
+                HISTORICAL_SHOPIFY_MISSING_PREFIX
+            )
+        )
+
     def _create_inventory_move(self, product, quantity, source_location, dest_location):
         self.ensure_one()
         move_vals = {
@@ -391,7 +417,7 @@ class ShopifyRestockItem(models.Model):
             )
         return move
 
-    def _transfer_quantity_in_shopify(self, quantity):
+    def _transfer_quantity_in_shopify(self, quantity, reference_uri=None):
         """Move the same quantity from Shopify Fulfillment to Shopify Retail."""
         self.ensure_one()
         source_location_id = self._get_shopify_source_location_id()
@@ -411,7 +437,7 @@ class ShopifyRestockItem(models.Model):
                 "Cannot update Shopify; missing " + ", ".join(missing) + "."
             )
 
-        reference_uri = (
+        reference_uri = reference_uri or (
             f"gid://homestead-gristmill/FulfillmentRestockItem/{self.id}"
         )
         return ShopifyAPI.from_env(self.env).transfer_available_inventory(
@@ -422,9 +448,121 @@ class ShopifyRestockItem(models.Model):
             reference_uri=reference_uri,
         )
 
+    def _reconcile_missing_shopify_transfer(self):
+        """Apply Shopify only when the linked Odoo move is already safely done."""
+        self.ensure_one()
+        qty = int(self.restock_amount or 0)
+        if qty <= 0:
+            raise RuntimeError("No restock amount to reconcile.")
+
+        product = self._get_odoo_product()
+        if not product:
+            raise RuntimeError(
+                f"No Odoo product found for SKU '{self.sku or ''}'."
+            )
+        source_location = self._get_source_location()
+        destination_location = self._get_destination_location()
+        if not source_location or not destination_location:
+            raise RuntimeError(
+                "Cannot reconcile Shopify because the Odoo transfer route is not configured."
+            )
+
+        move = self.inventory_move_id
+        move.invalidate_recordset(
+            ["state", "product_id", "product_uom_qty", "location_id", "location_dest_id"]
+        )
+        if move.state != "done":
+            raise RuntimeError(
+                f"Existing Odoo move {move.id} is {move.state}, not done."
+            )
+        if move.product_id != product:
+            raise RuntimeError(
+                f"Existing Odoo move {move.id} is for {move.product_id.display_name}, "
+                f"not {product.display_name}."
+            )
+        if float_compare(
+            move.product_uom_qty,
+            qty,
+            precision_rounding=move.product_uom.rounding,
+        ):
+            raise RuntimeError(
+                f"Existing Odoo move {move.id} moved {move.product_uom_qty:g}, "
+                f"not {qty}."
+            )
+        if (
+            move.location_id != source_location
+            or move.location_dest_id != destination_location
+        ):
+            raise RuntimeError(
+                f"Existing Odoo move {move.id} used "
+                f"{move.location_id.complete_name} -> "
+                f"{move.location_dest_id.complete_name}, not "
+                f"{source_location.complete_name} -> "
+                f"{destination_location.complete_name}."
+            )
+
+        reference_uri = (
+            "gid://homestead-gristmill/"
+            f"FulfillmentRestockReconciliation/{self.id}"
+        )
+        shopify_transfer = self._transfer_quantity_in_shopify(
+            qty, reference_uri=reference_uri
+        )
+        self.sudo().write({
+            "inventory_transfer_error": False,
+            "inventory_transferred_by":
+                self.env.context.get("transferred_by_uid") or self.env.user.id,
+        })
+        if self.todo_task_id:
+            try:
+                self.todo_task_id.sudo().message_post(
+                    body=(
+                        f"Shopify inventory reconciled without another Odoo move: "
+                        f"{qty} units of [{self.sku or ''}] "
+                        f"{self.product_title or ''}; Fulfillment "
+                        f"{shopify_transfer['source_before']} -> "
+                        f"{shopify_transfer['source_after']}, Retail "
+                        f"{shopify_transfer['destination_before']} -> "
+                        f"{shopify_transfer['destination_after']}."
+                    )
+                )
+            except Exception:  # pylint: disable=broad-except
+                _logger.exception(
+                    "Restock item %s reconciled in Shopify, but its task note failed",
+                    self.id,
+                )
+        _logger.info(
+            "Restock Shopify reconciliation complete: %s units of %s "
+            "(item %s, existing Odoo move %s); Shopify Fulfillment %s -> %s, "
+            "Retail %s -> %s",
+            qty,
+            product.display_name,
+            self.id,
+            move.id,
+            shopify_transfer["source_before"],
+            shopify_transfer["source_after"],
+            shopify_transfer["destination_before"],
+            shopify_transfer["destination_after"],
+        )
+        return shopify_transfer
+
     def action_transfer_inventory(self):
         """Move recommended qty from warehouse to POS retail when task completes."""
         for item in self:
+            if item._needs_shopify_reconciliation():
+                try:
+                    item._reconcile_missing_shopify_transfer()
+                except Exception as exc:  # pylint: disable=broad-except
+                    _logger.exception(
+                        "Restock Shopify reconciliation failed for item %s", item.id
+                    )
+                    item.sudo().write({
+                        "inventory_transfer_error": (
+                            f"{HISTORICAL_SHOPIFY_MISSING_PREFIX} "
+                            f"Retry failed: {str(exc)[:150]}"
+                        ),
+                    })
+                continue
             if not item.is_active_snapshot:
                 continue
             if item.inventory_transferred:
