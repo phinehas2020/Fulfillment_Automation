@@ -555,9 +555,12 @@ class ShopifyAPI:
                 "Shopify returned an invalid available inventory quantity."
             ) from exc
         if source_before < quantity:
-            raise exceptions.UserError(
-                f"Shopify Fulfillment has {source_before} available, "
-                f"but {quantity} are required."
+            _logger.warning(
+                "Proceeding with Shopify inventory transfer despite insufficient "
+                "source inventory: %s available, %s required; source will become %s",
+                source_before,
+                quantity,
+                source_before - quantity,
             )
         if expected_destination_after is not None:
             try:

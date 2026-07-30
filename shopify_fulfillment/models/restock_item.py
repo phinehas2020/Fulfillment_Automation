@@ -91,6 +91,7 @@ class ShopifyRestockItem(models.Model):
         copy=False,
     )
     inventory_transfer_error = fields.Char(string="Transfer Error", copy=False)
+    inventory_transfer_warning = fields.Char(string="Transfer Warning", copy=False)
 
     @api.depends("product_title", "variant_title", "restock_amount")
     def _compute_name(self):
@@ -454,6 +455,43 @@ class ShopifyRestockItem(models.Model):
             expected_destination_after=expected_destination_after,
         )
 
+    def _build_negative_inventory_warning(self, quantity, balances):
+        """Describe any negative balance left by an otherwise valid transfer."""
+        self.ensure_one()
+        negative_balances = []
+        for label, before, after, rounding in balances:
+            if float_compare(after, 0, precision_rounding=rounding) < 0:
+                negative_balances.append(f"{label} {before:g} -> {after:g}")
+        if not negative_balances:
+            return False
+        product_label = f"[{self.sku}] " if self.sku else ""
+        product_label += self.product_title or self.display_name
+        return (
+            f"Transfer completed with negative inventory for {quantity:g} units of "
+            f"{product_label}: {'; '.join(negative_balances)}. "
+            "Human inventory reconciliation is required."
+        )
+
+    def _notify_transfer_warning(self, warning):
+        """Persist the warning in task chatter and notify assigned task users."""
+        self.ensure_one()
+        if not warning or not self.todo_task_id:
+            return
+        task = self.todo_task_id.sudo()
+        try:
+            partner_ids = (
+                task.user_ids.mapped("partner_id").ids
+                if "user_ids" in task._fields
+                else []
+            )
+            task.message_post(body=warning, partner_ids=partner_ids)
+        except Exception:  # pylint: disable=broad-except
+            _logger.exception(
+                "Restock item %s transferred with a warning, but its task "
+                "notification failed",
+                self.id,
+            )
+
     def _reconcile_missing_shopify_transfer(self):
         """Apply Shopify only when the linked Odoo move is already safely done."""
         self.ensure_one()
@@ -525,6 +563,7 @@ class ShopifyRestockItem(models.Model):
         ):
             self.sudo().write({
                 "inventory_transfer_error": False,
+                "inventory_transfer_warning": False,
                 "inventory_transferred_by":
                     self.env.context.get("transferred_by_uid") or self.env.user.id,
             })
@@ -580,11 +619,30 @@ class ShopifyRestockItem(models.Model):
             reference_uri=reference_uri,
             expected_destination_after=expected_destination_after,
         )
+        warning = self._build_negative_inventory_warning(
+            qty,
+            [
+                (
+                    "Shopify Fulfillment",
+                    shopify_transfer["source_before"],
+                    shopify_transfer["source_after"],
+                    1,
+                ),
+                (
+                    "Shopify Retail",
+                    shopify_transfer["destination_before"],
+                    shopify_transfer["destination_after"],
+                    1,
+                ),
+            ],
+        )
         self.sudo().write({
             "inventory_transfer_error": False,
+            "inventory_transfer_warning": warning,
             "inventory_transferred_by":
                 self.env.context.get("transferred_by_uid") or self.env.user.id,
         })
+        self._notify_transfer_warning(warning)
         if self.todo_task_id:
             try:
                 self.todo_task_id.sudo().message_post(
@@ -679,30 +737,38 @@ class ShopifyRestockItem(models.Model):
                     item.id,
                 )
                 continue
-            available_qty = self.env["stock.quant"].sudo()._get_available_quantity(
-                product, source_location
+            quant_model = self.env["stock.quant"].sudo()
+            odoo_source_before = quant_model._get_available_quantity(
+                product, source_location, allow_negative=True
             )
-            if available_qty < qty:
-                item.sudo().write({
-                    "inventory_transfer_error": (
-                        f"Odoo Fulfillment has {available_qty:g} available, "
-                        f"but {qty} are required."
-                    ),
-                })
+            odoo_destination_before = quant_model._get_available_quantity(
+                product, dest_location, allow_negative=True
+            )
+            if float_compare(
+                odoo_source_before,
+                qty,
+                precision_rounding=product.uom_id.rounding,
+            ) < 0:
                 _logger.warning(
-                    "Insufficient Odoo source inventory for restock item %s: "
-                    "%s available, %s required",
+                    "Proceeding with restock item %s despite insufficient Odoo "
+                    "source inventory: %s available, %s required",
                     item.id,
-                    available_qty,
+                    odoo_source_before,
                     qty,
                 )
-                continue
             try:
                 with self.env.cr.savepoint():
                     move = item._create_inventory_move(
                         product, qty, source_location, dest_location
                     )
                     shopify_transfer = item._transfer_quantity_in_shopify(qty)
+                    quant_model.invalidate_model(["quantity", "reserved_quantity"])
+                    odoo_source_after = quant_model._get_available_quantity(
+                        product, source_location, allow_negative=True
+                    )
+                    odoo_destination_after = quant_model._get_available_quantity(
+                        product, dest_location, allow_negative=True
+                    )
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception(
                     "Restock inventory transfer failed for item %s", item.id
@@ -711,6 +777,35 @@ class ShopifyRestockItem(models.Model):
                     "inventory_transfer_error": f"Transfer failed: {str(exc)[:200]}",
                 })
                 continue
+            warning = item._build_negative_inventory_warning(
+                qty,
+                [
+                    (
+                        f"Odoo {source_location.complete_name}",
+                        odoo_source_before,
+                        odoo_source_after,
+                        product.uom_id.rounding,
+                    ),
+                    (
+                        f"Odoo {dest_location.complete_name}",
+                        odoo_destination_before,
+                        odoo_destination_after,
+                        product.uom_id.rounding,
+                    ),
+                    (
+                        "Shopify Fulfillment",
+                        shopify_transfer["source_before"],
+                        shopify_transfer["source_after"],
+                        1,
+                    ),
+                    (
+                        "Shopify Retail",
+                        shopify_transfer["destination_before"],
+                        shopify_transfer["destination_after"],
+                        1,
+                    ),
+                ],
+            )
             transferred_at = fields.Datetime.now()
             item.sudo().write({
                 "inventory_move_id": move.id,
@@ -719,10 +814,12 @@ class ShopifyRestockItem(models.Model):
                 "inventory_transferred_by":
                     item.env.context.get("transferred_by_uid") or item.env.user.id,
                 "inventory_transfer_error": False,
+                "inventory_transfer_warning": warning,
                 "is_active_snapshot": False,
                 "superseded_at": transferred_at,
                 "superseded_reason": "transferred",
             })
+            item._notify_transfer_warning(warning)
             _logger.info(
                 "Restock transfer complete: %s units of %s, Odoo %s -> %s "
                 "(item %s, move %s); Shopify Fulfillment %s -> %s, "

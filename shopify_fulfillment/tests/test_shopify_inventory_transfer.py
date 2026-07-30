@@ -73,7 +73,7 @@ class TestShopifyInventoryTransfer(BaseCase):
 
     @patch.object(shopify_api.requests, "post")
     @patch.object(shopify_api.requests, "get")
-    def test_source_shortage_blocks_adjustment(self, mock_get, mock_post):
+    def test_source_shortage_allows_negative_adjustment(self, mock_get, mock_post):
         mock_get.side_effect = [
             self._response({"variant": {"inventory_item_id": 999}}),
             self._response({
@@ -83,21 +83,31 @@ class TestShopifyInventoryTransfer(BaseCase):
                 ],
             }),
         ]
+        mock_post.return_value = self._response({
+            "data": {
+                "inventoryAdjustQuantities": {
+                    "userErrors": [],
+                    "inventoryAdjustmentGroup": {
+                        "referenceDocumentUri": "gid://test/Restock/7",
+                    },
+                },
+            },
+        })
         api = ShopifyAPI("example.myshopify.com", "token", "2026-01")
 
-        with self.assertRaisesRegex(
-            exceptions.UserError,
-            "Shopify Fulfillment has 0 available, but 3 are required",
-        ):
-            api.transfer_available_inventory(
-                variant_id="55",
-                quantity=3,
-                source_location_id="101",
-                destination_location_id="202",
-                reference_uri="gid://test/Restock/7",
-            )
+        result = api.transfer_available_inventory(
+            variant_id="55",
+            quantity=3,
+            source_location_id="101",
+            destination_location_id="202",
+            reference_uri="gid://test/Restock/7",
+        )
 
-        mock_post.assert_not_called()
+        self.assertEqual(result["source_after"], -3)
+        self.assertEqual(result["destination_after"], 7)
+        changes = mock_post.call_args.kwargs["json"]["variables"]["input"]["changes"]
+        self.assertEqual(changes[0]["delta"], -3)
+        self.assertEqual(changes[0]["changeFromQuantity"], 0)
 
     @patch.object(shopify_api.requests, "post")
     @patch.object(shopify_api.requests, "get")

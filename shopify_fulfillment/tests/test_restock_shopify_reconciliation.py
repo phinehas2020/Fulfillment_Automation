@@ -120,3 +120,71 @@ class TestRestockShopifyReconciliation(TransactionCase):
         api.transfer_available_inventory.assert_not_called()
         self.assertFalse(self.item.inventory_transfer_error)
         self.assertEqual(self.item.inventory_move_id, self.move)
+
+
+@tagged("post_install", "-at_install")
+class TestRestockNegativeInventoryTransfer(TransactionCase):
+    def setUp(self):
+        super().setUp()
+        self.source = self.env["stock.location"].create({
+            "name": "TEST Empty Fulfillment Source",
+            "usage": "internal",
+        })
+        self.destination = self.env["stock.location"].create({
+            "name": "TEST Retail Destination",
+            "usage": "internal",
+        })
+        self.product = self.env["product.product"].create({
+            "name": "TEST Negative Restock Product",
+            "default_code": "TEST-NEGATIVE-RESTOCK",
+            "is_storable": True,
+        })
+        self.task = self.env["project.task"].create({
+            "name": "TEST negative inventory restock task",
+            "state": "01_in_progress",
+        })
+        self.item = self.env["fulfillment.restock.item"].create({
+            "product_title": "TEST Negative Restock Product",
+            "variant_title": "Default Title",
+            "sku": "TEST-NEGATIVE-RESTOCK",
+            "restock_amount": 3,
+            "variant_id_global": "55",
+            "shopify_location_id": "202",
+            "todo_task_id": self.task.id,
+        })
+        self.task.fulfillment_restock_item_id = self.item
+        params = self.env["ir.config_parameter"].sudo()
+        params.set_param("fulfillment.restock_source_location_id", self.source.id)
+        params.set_param("fulfillment.pos_stock_location_id", self.destination.id)
+        params.set_param(
+            "fulfillment.restock_shopify_source_location_id", "101"
+        )
+
+    def test_transfer_completes_and_warns_when_sources_become_negative(self):
+        shopify_result = {
+            "source_before": 0,
+            "source_after": -3,
+            "destination_before": 0,
+            "destination_after": 3,
+        }
+        with patch.object(
+            type(self.item),
+            "_transfer_quantity_in_shopify",
+            autospec=True,
+            return_value=shopify_result,
+        ):
+            self.item.action_transfer_inventory()
+
+        self.assertTrue(self.item.inventory_transferred)
+        self.assertEqual(self.item.inventory_move_id.state, "done")
+        self.assertFalse(self.item.inventory_transfer_error)
+        self.assertIn("Odoo", self.item.inventory_transfer_warning)
+        self.assertIn("Shopify Fulfillment 0 -> -3", self.item.inventory_transfer_warning)
+        source_qty = self.env["stock.quant"]._get_available_quantity(
+            self.product, self.source, allow_negative=True
+        )
+        destination_qty = self.env["stock.quant"]._get_available_quantity(
+            self.product, self.destination, allow_negative=True
+        )
+        self.assertEqual(source_qty, -3)
+        self.assertEqual(destination_qty, 3)
