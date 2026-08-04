@@ -1411,9 +1411,83 @@ class ShopifyOrder(models.Model):
             processed.write({"auto_process_queued": False})
 
     def action_reset_and_reprocess(self):
-        """Reset fulfillment artifacts and re-run processing."""
+        """Refresh from Shopify, reset fulfillment artifacts, and reprocess."""
+        for order in self:
+            order._refresh_from_shopify_for_reprocess()
         self._reset_fulfillment_state()
         self.process_order()
+
+    def _refresh_from_shopify_for_reprocess(self):
+        """Refresh mutable order details before buying replacement labels.
+
+        Resetting can refund labels and delete local fulfillment artifacts, so
+        the Shopify fetch and address validation deliberately happen first.
+        """
+        self.ensure_one()
+
+        try:
+            shopify_orders = self._get_shopify_api().get_orders([self.shopify_id])
+        except Exception as exc:  # pylint: disable=broad-except
+            raise exceptions.UserError(
+                f"Reset stopped: Shopify order {self.order_name} could not be refreshed: {exc}"
+            ) from exc
+
+        order_data = next(
+            (
+                data
+                for data in shopify_orders
+                if str(data.get("id")) == str(self.shopify_id)
+            ),
+            None,
+        )
+        if not order_data:
+            raise exceptions.UserError(
+                f"Reset stopped: Shopify did not return order {self.order_name}."
+            )
+
+        prepared = self._prepare_order_vals_from_shopify(order_data)
+        refresh_fields = (
+            "email",
+            "customer_name",
+            "shipping_address_line1",
+            "shipping_address_line2",
+            "shipping_city",
+            "shipping_state",
+            "shipping_zip",
+            "shipping_country",
+            "shipping_phone",
+            "raw_payload",
+            "requested_shipping_method",
+            "source",
+            "shopify_location_id",
+        )
+        refresh_vals = {
+            field_name: prepared.get(field_name) or False
+            for field_name in refresh_fields
+        }
+
+        required_address_fields = {
+            "street": refresh_vals["shipping_address_line1"],
+            "city": refresh_vals["shipping_city"],
+            "state": refresh_vals["shipping_state"],
+            "ZIP/postal code": refresh_vals["shipping_zip"],
+            "country": refresh_vals["shipping_country"],
+        }
+        missing = [
+            label for label, value in required_address_fields.items() if not value
+        ]
+        if missing:
+            raise exceptions.UserError(
+                f"Reset stopped: Shopify order {self.order_name} still has no usable "
+                f"shipping address. Missing: {', '.join(missing)}."
+            )
+
+        self.write(refresh_vals)
+        _logger.info(
+            "Order %s: refreshed customer, shipping address, and shipping method from Shopify before reset",
+            self.id,
+        )
+        return order_data
 
     def _reset_fulfillment_state(self):
         """Clear shipments/print jobs and return order to pending state."""

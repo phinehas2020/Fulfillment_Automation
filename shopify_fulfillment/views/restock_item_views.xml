@@ -4,7 +4,11 @@
         <field name="name">fulfillment.restock.item.tree</field>
         <field name="model">fulfillment.restock.item</field>
         <field name="arch" type="xml">
-            <list string="Restock Items" decoration-success="inventory_transferred" decoration-muted="not is_active_snapshot">
+            <list string="Restock Items"
+                  decoration-success="inventory_transferred and not inventory_transfer_error and not inventory_transfer_warning"
+                  decoration-warning="inventory_transfer_warning and not inventory_transfer_error"
+                  decoration-danger="inventory_transfer_error"
+                  decoration-muted="not is_active_snapshot">
                 <field name="create_date"/>
                 <field name="product_title"/>
                 <field name="variant_title"/>
@@ -17,6 +21,8 @@
                 <field name="source_pos_order_id"/>
                 <field name="is_active_snapshot"/>
                 <field name="inventory_transferred"/>
+                <field name="inventory_transfer_error" optional="show"/>
+                <field name="inventory_transfer_warning" optional="show"/>
             </list>
         </field>
     </record>
@@ -59,6 +65,7 @@
                         <field name="inventory_transferred_at"/>
                         <field name="inventory_transferred_by"/>
                         <field name="inventory_transfer_error"/>
+                        <field name="inventory_transfer_warning"/>
                     </group>
                     <group string="Identity">
                         <field name="identity_key"/>
@@ -86,6 +93,8 @@
                         domain="[('inventory_transferred', '=', False), ('is_active_snapshot', '=', True)]"/>
                 <filter string="Transferred" name="transferred"
                         domain="[('inventory_transferred', '=', True)]"/>
+                <filter string="Transfer Warnings" name="transfer_warnings"
+                        domain="[('inventory_transfer_warning', '!=', False)]"/>
             </search>
         </field>
     </record>

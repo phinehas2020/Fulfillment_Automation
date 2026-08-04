@@ -3,6 +3,7 @@
 import base64
 import hmac
 import logging
+import uuid
 from hashlib import sha256
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -39,8 +40,9 @@ class ShopifyAPI:
             "X-Shopify-Access-Token": self.api_key,
         }
 
-    def _url(self, path: str) -> str:
-        return f"https://{self.shop_domain}/admin/api/{self.api_version}{path}"
+    def _url(self, path: str, api_version: Optional[str] = None) -> str:
+        version = api_version or self.api_version
+        return f"https://{self.shop_domain}/admin/api/{version}{path}"
 
     def get_shipping_rates(self, order) -> List[Dict[str, Any]]:
         """
@@ -426,6 +428,259 @@ class ShopifyAPI:
             raise exceptions.UserError(
                 f"Invalid Shopify available quantity for item {inventory_item_id}: {available}"
             ) from exc
+
+    @staticmethod
+    def _numeric_shopify_id(value: str, label: str) -> str:
+        """Normalize a numeric Shopify ID or GID and reject ambiguous values."""
+        numeric_id = str(value or "").strip().split("/")[-1]
+        if not numeric_id.isdigit():
+            raise exceptions.UserError(f"Invalid Shopify {label}: {value or 'missing'}.")
+        return numeric_id
+
+    def _inventory_transfer_api_version(self) -> str:
+        """Use a version that supports CAS and idempotent inventory adjustments."""
+        try:
+            configured_version = tuple(
+                int(piece) for piece in str(self.api_version or "").split("-")
+            )
+        except (TypeError, ValueError):
+            configured_version = ()
+        return self.api_version if configured_version >= (2026, 1) else "2026-01"
+
+    @staticmethod
+    def _inventory_error_message(errors) -> str:
+        messages = []
+        for error in errors or []:
+            if isinstance(error, dict):
+                message = error.get("message") or str(error)
+                code = error.get("code")
+                messages.append(f"{message} ({code})" if code else message)
+            else:
+                messages.append(str(error))
+        return "; ".join(messages) or "Unknown Shopify inventory error."
+
+    def transfer_available_inventory(
+        self,
+        *,
+        variant_id: str,
+        quantity: int,
+        source_location_id: str,
+        destination_location_id: str,
+        reference_uri: str,
+        expected_destination_after: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Atomically deduct available stock at source and add it at destination.
+
+        The compare-and-swap quantities prevent a concurrent Shopify change from
+        being overwritten. The deterministic idempotency key prevents a network
+        retry from applying the same restock twice.
+        """
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError) as exc:
+            raise exceptions.UserError("Shopify transfer quantity must be an integer.") from exc
+        if quantity <= 0:
+            raise exceptions.UserError("Shopify transfer quantity must be greater than zero.")
+
+        variant_numeric = self._numeric_shopify_id(variant_id, "variant ID")
+        source_numeric = self._numeric_shopify_id(
+            source_location_id, "source location ID"
+        )
+        destination_numeric = self._numeric_shopify_id(
+            destination_location_id, "destination location ID"
+        )
+        if source_numeric == destination_numeric:
+            raise exceptions.UserError(
+                "Shopify source and destination locations must be different."
+            )
+        if not reference_uri:
+            raise exceptions.UserError("Shopify transfer reference is required.")
+
+        api_version = self._inventory_transfer_api_version()
+        variant_response = requests.get(
+            self._url(f"/variants/{variant_numeric}.json", api_version),
+            headers=self._headers(),
+            timeout=30,
+        )
+        if variant_response.status_code >= 400:
+            raise exceptions.UserError(
+                f"Shopify variant lookup failed with HTTP "
+                f"{variant_response.status_code}."
+            )
+        inventory_item_id = (
+            (variant_response.json().get("variant") or {}).get("inventory_item_id")
+        )
+        if not inventory_item_id:
+            raise exceptions.UserError(
+                f"Shopify variant {variant_numeric} has no inventory item."
+            )
+        inventory_item_numeric = self._numeric_shopify_id(
+            inventory_item_id, "inventory item ID"
+        )
+
+        levels_response = requests.get(
+            self._url("/inventory_levels.json", api_version),
+            headers=self._headers(),
+            params={
+                "inventory_item_ids": inventory_item_numeric,
+                "location_ids": f"{source_numeric},{destination_numeric}",
+            },
+            timeout=30,
+        )
+        if levels_response.status_code >= 400:
+            raise exceptions.UserError(
+                f"Shopify inventory lookup failed with HTTP "
+                f"{levels_response.status_code}."
+            )
+        levels_before = {
+            str(level.get("location_id")): level.get("available")
+            for level in (levels_response.json().get("inventory_levels") or [])
+        }
+        missing_locations = [
+            location_id
+            for location_id in (source_numeric, destination_numeric)
+            if location_id not in levels_before or levels_before[location_id] is None
+        ]
+        if missing_locations:
+            raise exceptions.UserError(
+                "Shopify has no available inventory level for location(s): "
+                + ", ".join(missing_locations)
+                + "."
+            )
+        try:
+            source_before = int(levels_before[source_numeric])
+            destination_before = int(levels_before[destination_numeric])
+        except (TypeError, ValueError) as exc:
+            raise exceptions.UserError(
+                "Shopify returned an invalid available inventory quantity."
+            ) from exc
+        if source_before < quantity:
+            _logger.warning(
+                "Proceeding with Shopify inventory transfer despite insufficient "
+                "source inventory: %s available, %s required; source will become %s",
+                source_before,
+                quantity,
+                source_before - quantity,
+            )
+        if expected_destination_after is not None:
+            try:
+                expected_destination_after = int(expected_destination_after)
+            except (TypeError, ValueError) as exc:
+                raise exceptions.UserError(
+                    "Expected Shopify destination quantity must be an integer."
+                ) from exc
+            destination_after = destination_before + quantity
+            if destination_after != expected_destination_after:
+                raise exceptions.UserError(
+                    f"Shopify Retail would become {destination_after}, but Odoo "
+                    f"Retail currently has {expected_destination_after}. "
+                    "No inventory adjustment was sent."
+                )
+
+        mutation = """
+            mutation AdjustFulfillmentRestockInventory(
+                $input: InventoryAdjustQuantitiesInput!,
+                $idempotencyKey: String!
+            ) {
+                inventoryAdjustQuantities(input: $input)
+                    @idempotent(key: $idempotencyKey) {
+                    userErrors { field message code }
+                    inventoryAdjustmentGroup {
+                        createdAt
+                        referenceDocumentUri
+                        changes(quantityNames: ["available"]) {
+                            name
+                            delta
+                        }
+                    }
+                }
+            }
+        """
+        idempotency_key = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                (
+                    f"{reference_uri}:paired-available-v1:"
+                    f"{inventory_item_numeric}:{source_numeric}:"
+                    f"{destination_numeric}:{quantity}"
+                ),
+            )
+        )
+        move_response = requests.post(
+            self._url("/graphql.json", api_version),
+            headers=self._headers(),
+            json={
+                "query": mutation,
+                "variables": {
+                    "idempotencyKey": idempotency_key,
+                    "input": {
+                        "reason": "correction",
+                        "name": "available",
+                        "referenceDocumentUri": reference_uri,
+                        "changes": [
+                            {
+                                "delta": -quantity,
+                                "changeFromQuantity": source_before,
+                                "inventoryItemId": (
+                                    f"gid://shopify/InventoryItem/"
+                                    f"{inventory_item_numeric}"
+                                ),
+                                "locationId": (
+                                    f"gid://shopify/Location/{source_numeric}"
+                                ),
+                            },
+                            {
+                                "delta": quantity,
+                                "changeFromQuantity": destination_before,
+                                "inventoryItemId": (
+                                    f"gid://shopify/InventoryItem/"
+                                    f"{inventory_item_numeric}"
+                                ),
+                                "locationId": (
+                                    f"gid://shopify/Location/{destination_numeric}"
+                                ),
+                            },
+                        ],
+                    },
+                },
+            },
+            timeout=30,
+        )
+        if move_response.status_code >= 400:
+            raise exceptions.UserError(
+                f"Shopify inventory transfer failed with HTTP "
+                f"{move_response.status_code}."
+            )
+        response_json = move_response.json()
+        if response_json.get("errors"):
+            raise exceptions.UserError(
+                "Shopify inventory transfer failed: "
+                + self._inventory_error_message(response_json["errors"])
+            )
+        payload = (
+            (response_json.get("data") or {}).get("inventoryAdjustQuantities")
+            or {}
+        )
+        if payload.get("userErrors"):
+            raise exceptions.UserError(
+                "Shopify inventory transfer failed: "
+                + self._inventory_error_message(payload["userErrors"])
+            )
+        if not payload.get("inventoryAdjustmentGroup"):
+            raise exceptions.UserError(
+                "Shopify did not confirm the paired inventory transfer."
+            )
+
+        return {
+            "inventory_item_id": inventory_item_numeric,
+            "source_location_id": source_numeric,
+            "destination_location_id": destination_numeric,
+            "source_before": source_before,
+            "source_after": source_before - quantity,
+            "destination_before": destination_before,
+            "destination_after": destination_before + quantity,
+            "idempotency_key": idempotency_key,
+        }
 
     def graphql_query(self, query: str) -> Dict[str, Any]:
         """Execute a GraphQL query."""
