@@ -74,19 +74,23 @@ class ProjectTask(models.Model):
             qty_done = move.product_uom_qty or 0.0
             if hasattr(move, "quantity"):
                 move.quantity = qty_done
-            if hasattr(move, "quantity_done"):
+            elif hasattr(move, "quantity_done"):
                 move.quantity_done = qty_done
-
-            for move_line in move.move_line_ids:
-                if hasattr(move_line, "qty_done"):
-                    move_line.qty_done = qty_done
-                elif hasattr(move_line, "quantity_done"):
-                    move_line.quantity_done = qty_done
-                elif hasattr(move_line, "quantity"):
-                    move_line.quantity = qty_done
 
             if hasattr(move, "picked"):
                 move.picked = True
+
+    def _validate_fulfillment_picking(self, picking):
+        """Validate an automated delivery and fail unless Odoo completes it."""
+        result = picking.with_context(skip_sms=True).button_validate()
+        if picking.state != "done":
+            action_model = result.get("res_model") if isinstance(result, dict) else False
+            detail = _(" Odoo requested the %s wizard instead.") % action_model if action_model else ""
+            raise UserError(
+                _("Delivery %s did not reach Done after validation.%s")
+                % (picking.name, detail)
+            )
+        return result
 
     def _mark_sale_order_paid(self, sale_order):
         """Create/post the customer invoice and register payment for paid online orders."""
@@ -189,8 +193,10 @@ class ProjectTask(models.Model):
                     picking.action_confirm()
                 picking.action_assign()
                 self._set_picking_done_quantities(picking)
-                picking.button_validate()
+                self._validate_fulfillment_picking(picking)
 
+            if picking.state != "done":
+                raise UserError(_("Delivery %s is not Done; invoicing was stopped.") % picking.name)
             invoices = self._mark_sale_order_paid(sale_order)
             self.fulfillment_inventory_deducted = True
             invoice_names = ", ".join(invoices.mapped("name"))
