@@ -24,6 +24,7 @@
                             <field name="print_agent_lease_seconds"/>
                             <field name="fulfillment_error_alert_emails" placeholder="ops@example.com, warehouse@example.com"/>
                             <field name="fulfillment_error_alert_teams_webhook_url" password="True"/>
+                            <field name="fulfillment_pickup_teams_workflow_url" password="True"/>
                         </group>
                         <group string="Automation">
                             <field name="fulfillment_auto_process"/>

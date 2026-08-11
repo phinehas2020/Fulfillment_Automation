@@ -7,6 +7,11 @@ from typing import Optional
 
 from odoo import api, exceptions, fields, models
 from ..services.address_utils import normalize_address_lines
+from ..services.pickup_utils import (
+    fulfillment_orders_confirm_pickup,
+    payload_has_ambiguous_physical_fulfillment,
+    payload_is_pickup,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -51,6 +56,8 @@ class ShopifyOrder(models.Model):
             ("processing", "Processing"),
             ("ready_to_ship", "Ready to Ship"),
             ("shipped", "Shipped"),
+            ("pickup_pending", "Pickup Task Created"),
+            ("pickup_completed", "Pickup Completed"),
             ("inventory_synced", "Inventory Synced"),
             ("error", "Error"),
             ("manual_required", "Manual Review"),
@@ -96,6 +103,40 @@ class ShopifyOrder(models.Model):
     created_at = fields.Datetime()
     raw_payload = fields.Text()
     requested_shipping_method = fields.Char(string="Requested Shipping Method")
+    fulfillment_type = fields.Selection(
+        [("shipping", "Shipping"), ("pickup", "Pickup")],
+        string="Fulfillment Type",
+        default="shipping",
+        required=True,
+        index=True,
+    )
+    pickup_notification_state = fields.Selection(
+        [
+            ("not_applicable", "Not Applicable"),
+            ("queued", "Queued"),
+            ("sent", "Sent"),
+            ("error", "Error"),
+        ],
+        string="Pickup Teams Notification",
+        default="not_applicable",
+        required=True,
+        copy=False,
+    )
+    pickup_notification_sent_at = fields.Datetime(
+        string="Pickup Notification Sent At",
+        readonly=True,
+        copy=False,
+    )
+    pickup_notification_error = fields.Text(
+        string="Pickup Notification Error",
+        readonly=True,
+        copy=False,
+    )
+    pickup_notification_attempts = fields.Integer(
+        string="Pickup Notification Attempts",
+        readonly=True,
+        copy=False,
+    )
     shopify_location_id = fields.Char(string="Shopify Location ID", index=True)
     pos_inventory_synced_at = fields.Datetime(string="POS Inventory Synced At", readonly=True)
     pos_inventory_sync_summary = fields.Text(string="POS Inventory Sync Summary", readonly=True)
@@ -276,6 +317,26 @@ class ShopifyOrder(models.Model):
         return "shopify"
 
     @staticmethod
+    def _fulfillment_type_from_payload(payload: dict):
+        return "pickup" if payload_is_pickup(payload or {}) else "shipping"
+
+    @api.model
+    def _fulfillment_classification_vals(self, payload: dict):
+        fulfillment_type = self._fulfillment_type_from_payload(payload)
+        vals = {"fulfillment_type": fulfillment_type}
+        if fulfillment_type == "pickup":
+            vals["pickup_notification_state"] = "queued"
+        elif payload_has_ambiguous_physical_fulfillment(payload or {}):
+            vals.update({
+                "state": "manual_required",
+                "error_message": (
+                    "Physical Shopify order has no shipping address and no explicit "
+                    "pickup method. Manual review is required."
+                ),
+            })
+        return vals
+
+    @staticmethod
     def _shopify_location_id_from_payload(payload: dict):
         location_id = (payload or {}).get("location_id")
         return str(location_id) if location_id else False
@@ -311,8 +372,23 @@ class ShopifyOrder(models.Model):
 
         order_reference = self.order_name or self.order_number or self.shopify_id or ""
         parts = []
+        if self.fulfillment_type == "pickup":
+            parts.append(
+                "<p><strong>Pickup order:</strong> Prepare this order, mark it ready "
+                "in Shopify, then finish this Odoo task after preparation.</p>"
+            )
         if order_reference:
             parts.append(f"<p><strong>Order:</strong> {escape(str(order_reference))}</p>")
+
+        shop_domain = (
+            self.env["ir.config_parameter"].sudo().get_param("shopify.shop_domain", "")
+            or ""
+        ).strip()
+        if self.fulfillment_type == "pickup" and shop_domain and self.shopify_id:
+            order_url = f"https://{shop_domain}/admin/orders/{self.shopify_id}"
+            parts.append(
+                f'<p><a href="{escape(order_url)}">Open pickup order in Shopify</a></p>'
+            )
 
         parts.append("<ul>")
         for line in self.line_ids:
@@ -401,6 +477,94 @@ class ShopifyOrder(models.Model):
             "view_mode": "form",
             "target": "current",
         }
+
+    def _confirm_pickup_delivery_method(self):
+        """Confirm explicit pickup classification when Shopify exposes a method."""
+        self.ensure_one()
+        if self.fulfillment_type != "pickup":
+            return False
+        try:
+            method_types = self._get_shopify_api().get_fulfillment_delivery_method_types(
+                self.shopify_id
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            _logger.warning(
+                "Order %s: Shopify pickup confirmation unavailable: %s",
+                self.order_name,
+                exc,
+            )
+            return True
+
+        confirmed = fulfillment_orders_confirm_pickup(method_types)
+        if confirmed is False:
+            self.write({
+                "state": "manual_required",
+                "error_message": (
+                    "Shopify order payload says pickup, but its fulfillment-order "
+                    "delivery method is not pickup. Manual review is required."
+                ),
+                "auto_process_queued": False,
+            })
+            return False
+        return True
+
+    def _send_pickup_notification(self):
+        self.ensure_one()
+        if self.fulfillment_type != "pickup":
+            return False
+        if self.pickup_notification_state == "sent":
+            return True
+
+        task = self.ensure_fulfillment_task()
+        from ..services.alert_service import AlertService
+
+        success, error = AlertService.from_env(self.env).notify_pickup_assignee(
+            order=self,
+            task=task,
+        )
+        vals = {
+            "pickup_notification_attempts": self.pickup_notification_attempts + 1,
+        }
+        if success:
+            vals.update({
+                "pickup_notification_state": "sent",
+                "pickup_notification_sent_at": fields.Datetime.now(),
+                "pickup_notification_error": False,
+            })
+            task.message_post(body="Pickup notification accepted by the Teams workflow.")
+        else:
+            vals.update({
+                "pickup_notification_state": "error",
+                "pickup_notification_error": error or "Pickup Teams notification failed.",
+            })
+            task.message_post(body=f"Pickup Teams notification failed: {escape(error or '')}")
+        self.write(vals)
+        return success
+
+    def _process_pickup_order(self):
+        self.ensure_one()
+        if not self._confirm_pickup_delivery_method():
+            return False
+
+        self.ensure_fulfillment_task()
+        self.write({
+            "state": "pickup_pending",
+            "error_message": False,
+            "auto_process_queued": False,
+        })
+        self._send_pickup_notification()
+        return True
+
+    def action_retry_pickup_notification(self):
+        for order in self:
+            if order.fulfillment_type != "pickup":
+                continue
+            order.write({
+                "pickup_notification_state": "queued",
+                "pickup_notification_error": False,
+            })
+            order._send_pickup_notification()
+        return True
 
     def action_manual_inventory_deduction(self):
         """Force inventory deduction by finding or creating a task and running its deduction logic."""
@@ -1263,11 +1427,14 @@ class ShopifyOrder(models.Model):
                 except Exception as partner_err:
                     _logger.warning("Failed to create partner for order %s: %s", shopify_id, partner_err)
                 
-                # Check if auto-processing is enabled; queue for the cron so
-                # a large import doesn't block on Shippo calls per order.
+                # Pickup tasks must be created even when automated shipping is
+                # disabled. Shipping orders retain the existing setting.
                 ICP = self.env["ir.config_parameter"].sudo()
                 auto_process = ICP.get_param("fulfillment.auto_process", "False")
-                if auto_process.lower() in ("true", "1", "yes"):
+                if order.state == "pending" and (
+                    order.fulfillment_type == "pickup"
+                    or auto_process.lower() in ("true", "1", "yes")
+                ):
                     order.auto_process_queued = True
                     queued_any = True
                     _logger.info("Order %s queued for auto-processing", order.id)
@@ -1345,7 +1512,7 @@ class ShopifyOrder(models.Model):
             except Exception:
                 pass
         
-        return {
+        vals = {
             "shopify_id": str(payload.get("id")),
             "order_number": payload.get("order_number"),
             "order_name": payload.get("name"),
@@ -1365,6 +1532,8 @@ class ShopifyOrder(models.Model):
             "requested_shipping_method": requested_method,
             "shopify_location_id": self._shopify_location_id_from_payload(payload),
         }
+        vals.update(self._fulfillment_classification_vals(payload))
+        return vals
 
     def action_process(self):
         for order in self:
@@ -1400,15 +1569,26 @@ class ShopifyOrder(models.Model):
             ],
             limit=limit,
         )
-        if not orders:
-            return
-        _logger.info("Cron: processing %d queued order(s)", len(orders))
-        orders.process_order()
-        # process_order moves orders out of "pending" (ready/manual/error);
-        # clear the queue flag on those so state resets don't re-trigger.
-        processed = orders.filtered(lambda o: o.state != "pending")
-        if processed:
-            processed.write({"auto_process_queued": False})
+        if orders:
+            _logger.info("Cron: processing %d queued order(s)", len(orders))
+            orders.process_order()
+            # process_order moves orders out of "pending" (ready/manual/error);
+            # clear the queue flag on those so state resets don't re-trigger.
+            processed = orders.filtered(lambda o: o.state != "pending")
+            if processed:
+                processed.write({"auto_process_queued": False})
+
+        retry_orders = self.search(
+            [
+                ("fulfillment_type", "=", "pickup"),
+                ("state", "=", "pickup_pending"),
+                ("pickup_notification_state", "in", ("queued", "error")),
+                ("pickup_notification_attempts", "<", 3),
+            ],
+            limit=limit,
+        )
+        for order in retry_orders:
+            order._send_pickup_notification()
 
     def action_reset_and_reprocess(self):
         """Refresh from Shopify, reset fulfillment artifacts, and reprocess."""
@@ -1699,6 +1879,10 @@ class ShopifyOrder(models.Model):
 
         if self.source == "pos":
             self._sync_pos_inventory_from_shopify()
+            return
+
+        if self.fulfillment_type == "pickup":
+            self._process_pickup_order()
             return
 
         # Step 0: Risk Check

@@ -13,6 +13,7 @@
                 <field name="customer_name"/>
                 <field name="state"/>
                 <field name="source"/>
+                <field name="fulfillment_type"/>
                 <field name="total_items"/>
                 <field name="total_weight"/>
                 <field name="box_count" string="Boxes"/>
@@ -45,7 +46,19 @@
                         <field name="shopify_id" readonly="1"/>
                         <field name="shopify_risk_level" widget="badge" decoration-danger="shopify_risk_level == 'HIGH'" decoration-warning="shopify_risk_level == 'MEDIUM'" decoration-success="shopify_risk_level == 'LOW'"/>
                         <field name="source"/>
+                        <field name="fulfillment_type" readonly="1"/>
                         <field name="created_at"/>
+                    </group>
+                    <group string="Pickup Notification" invisible="fulfillment_type != 'pickup'">
+                        <field name="pickup_notification_state" readonly="1"/>
+                        <field name="pickup_notification_sent_at" readonly="1"/>
+                        <field name="pickup_notification_attempts" readonly="1"/>
+                        <field name="pickup_notification_error" readonly="1"/>
+                        <button name="action_retry_pickup_notification"
+                                type="object"
+                                string="Retry Teams Direct Message"
+                                class="btn-secondary"
+                                invisible="pickup_notification_state == 'sent'"/>
                     </group>
                     <group string="POS Inventory Sync" invisible="source != 'pos'">
                         <field name="shopify_location_id" readonly="1"/>
@@ -74,7 +87,7 @@
                                 <field name="pos_inventory_sync_summary" readonly="1"/>
                             </group>
                         </page>
-                        <page string="Shipment" invisible="source == 'pos'">
+                        <page string="Shipment" invisible="source == 'pos' or fulfillment_type == 'pickup'">
                             <group>
                                 <group>
                                     <field name="box_count" string="Number of Boxes"/>
@@ -102,7 +115,7 @@
                                 </field>
                             </group>
                         </page>
-                        <page string="Print Jobs" invisible="source == 'pos'">
+                        <page string="Print Jobs" invisible="source == 'pos' or fulfillment_type == 'pickup'">
                             <field name="print_job_ids" context="{'tree_view_ref': 'shopify_fulfillment.view_print_job_tree'}"/>
                         </page>
                         <page string="Inventory Status" name="inventory_status" invisible="source == 'pos'">

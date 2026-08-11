@@ -30,6 +30,11 @@ class ResConfigSettings(models.TransientModel):
         string="Teams Error Alert Webhook URL",
         help="Microsoft Teams incoming webhook URL for immediate fulfillment error alerts.",
     )
+    fulfillment_pickup_teams_workflow_url = fields.Char(
+        config_parameter='fulfillment.pickup_teams_workflow_url',
+        string="Pickup Teams Direct-Message Workflow URL",
+        help="Power Automate HTTP workflow that direct-messages the assigned pickup employee.",
+    )
     
     # Many2one fields don't support config_parameter directly in Odoo safely.
     # We use manual get/set for these.

@@ -190,6 +190,16 @@ class ShopifyAPI:
             if fo.get("status") in ("open", "in_progress")
         ]
 
+    def get_fulfillment_delivery_method_types(self, shopify_order_id: str) -> List[str]:
+        """Return Shopify delivery method types for open fulfillment orders."""
+        method_types = []
+        for fulfillment_order in self._get_fulfillable_orders(shopify_order_id):
+            delivery_method = fulfillment_order.get("delivery_method") or {}
+            method_type = delivery_method.get("method_type")
+            if method_type:
+                method_types.append(str(method_type))
+        return method_types
+
     def get_orders(self, shopify_ids: List[str]) -> List[Dict[str, Any]]:
         """
         Fetch multiple orders by Shopify ID.

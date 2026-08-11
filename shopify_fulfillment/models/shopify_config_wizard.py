@@ -20,6 +20,9 @@ class ShopifyConfigWizard(models.TransientModel):
     print_agent_lease_seconds = fields.Integer(string="Lease Seconds")
     fulfillment_error_alert_emails = fields.Char(string="Error Alert Emails")
     fulfillment_error_alert_teams_webhook_url = fields.Char(string="Teams Error Alert Webhook URL")
+    fulfillment_pickup_teams_workflow_url = fields.Char(
+        string="Pickup Teams Direct-Message Workflow URL"
+    )
 
     # Automation
     fulfillment_auto_process = fields.Boolean(string="Auto-Process Orders")
@@ -64,6 +67,7 @@ class ShopifyConfigWizard(models.TransientModel):
             'print_agent_lease_seconds': int(ICP.get_param('print_agent.lease_seconds', '300') or 300),
             'fulfillment_error_alert_emails': ICP.get_param('fulfillment.error_alert_emails', ''),
             'fulfillment_error_alert_teams_webhook_url': ICP.get_param('fulfillment.error_alert_teams_webhook_url', ''),
+            'fulfillment_pickup_teams_workflow_url': ICP.get_param('fulfillment.pickup_teams_workflow_url', ''),
             'fulfillment_auto_process': ICP.get_param('fulfillment.auto_process', 'False') == 'True',
             'fulfillment_default_user_id': self._get_param_as_int('fulfillment.default_user_id'),
             'fulfillment_risk_reviewer_id': self._get_param_as_int('fulfillment.risk_reviewer_id'),
@@ -93,6 +97,7 @@ class ShopifyConfigWizard(models.TransientModel):
         ICP.set_param('print_agent.lease_seconds', str(self.print_agent_lease_seconds or 300))
         ICP.set_param('fulfillment.error_alert_emails', self.fulfillment_error_alert_emails or '')
         ICP.set_param('fulfillment.error_alert_teams_webhook_url', self.fulfillment_error_alert_teams_webhook_url or '')
+        ICP.set_param('fulfillment.pickup_teams_workflow_url', self.fulfillment_pickup_teams_workflow_url or '')
         ICP.set_param('fulfillment.auto_process', str(self.fulfillment_auto_process))
         ICP.set_param('fulfillment.default_user_id', str(self.fulfillment_default_user_id.id or ''))
         ICP.set_param('fulfillment.risk_reviewer_id', str(self.fulfillment_risk_reviewer_id.id or ''))

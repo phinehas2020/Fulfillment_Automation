@@ -89,7 +89,10 @@ class ShopifyWebhookController(http.Controller):
             # Shopify allows a webhook response, and repeated timeouts get the
             # webhook subscription dropped.
             auto_process = request.env["ir.config_parameter"].sudo().get_param("fulfillment.auto_process", "False")
-            if auto_process.lower() in ("true", "1", "yes"):
+            if order.state == "pending" and (
+                order.fulfillment_type == "pickup"
+                or auto_process.lower() in ("true", "1", "yes")
+            ):
                 order.auto_process_queued = True
                 order.trigger_queued_processing_cron()
                 _logger.info("Order %s queued for auto-processing", order.id)
@@ -153,7 +156,7 @@ class ShopifyWebhookController(http.Controller):
                 or shipping_lines[0].get("carrier_identifier")
             )
         
-        return {
+        vals = {
             "shopify_id": str(payload.get("id")),
             "order_number": payload.get("order_number"),
             "order_name": payload.get("name"),
@@ -173,6 +176,8 @@ class ShopifyWebhookController(http.Controller):
             "requested_shipping_method": requested_method,
             "shopify_location_id": order_model._shopify_location_id_from_payload(payload),
         }
+        vals.update(order_model._fulfillment_classification_vals(payload))
+        return vals
 
     @staticmethod
     def _parse_date(date_str: str):

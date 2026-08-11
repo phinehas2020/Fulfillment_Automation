@@ -38,6 +38,83 @@ class AlertService:
             _logger.warning("AlertService: no alert channels succeeded for '%s'", subject)
         return email_ok or teams_ok
 
+    def notify_pickup_assignee(self, *, order, task):
+        """Ask a Teams Workflow to direct-message the pickup task assignee.
+
+        Returns ``(success, error_message)`` so notification failures can be
+        retried without blocking creation of the employee's Odoo task.
+        """
+        webhook_url = (
+            self.icp.get_param("fulfillment.pickup_teams_workflow_url", "") or ""
+        ).strip()
+        if not webhook_url:
+            return False, "Pickup Teams direct-message workflow URL is not configured."
+
+        assignee = task.user_ids[:1]
+        if not assignee:
+            return False, "Pickup task has no assigned employee."
+
+        recipient_email = (
+            assignee.partner_id.email or assignee.email or ""
+        ).strip()
+        if not recipient_email:
+            return False, "Pickup task assignee has no Odoo work email."
+
+        shop_domain = (self.icp.get_param("shopify.shop_domain", "") or "").strip()
+        web_base_url = (self.icp.get_param("web.base.url", "") or "").rstrip("/")
+        shopify_order_url = (
+            f"https://{shop_domain}/admin/orders/{order.shopify_id}"
+            if shop_domain and order.shopify_id
+            else ""
+        )
+        odoo_task_url = (
+            f"{web_base_url}/web#id={task.id}&model=project.task&view_type=form"
+            if web_base_url
+            else ""
+        )
+        item_lines = []
+        for line in order.line_ids:
+            if not line.requires_shipping:
+                continue
+            label = line.title or line.sku or "Item"
+            if line.variant_title and line.variant_title != "Default Title":
+                label = f"{label} - {line.variant_title}"
+            item_lines.append(f"{label} x{line.quantity}")
+
+        order_reference = order.order_name or order.order_number or order.shopify_id
+        instructions = (
+            "Prepare this pickup order, mark it ready in Shopify, then finish "
+            "the Odoo task after the order is prepared."
+        )
+        payload = {
+            "event_type": "shopify_pickup_order",
+            "recipient_email": recipient_email,
+            "recipient_name": assignee.display_name or "",
+            "subject": f"Pickup order {order_reference} needs to be prepared",
+            "message": instructions,
+            "order_reference": order_reference or "",
+            "customer_name": order.customer_name or "",
+            "shopify_order_id": order.shopify_id or "",
+            "shopify_order_url": shopify_order_url,
+            "odoo_task_id": task.id,
+            "odoo_task_url": odoo_task_url,
+            "items": item_lines,
+            "instructions": instructions,
+        }
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code >= 400:
+                error = "Pickup Teams workflow failed with status %s: %s" % (
+                    response.status_code,
+                    (response.text or "")[:500],
+                )
+                _logger.error("AlertService: %s", error)
+                return False, error
+            return True, ""
+        except Exception as exc:  # pylint: disable=broad-except
+            _logger.exception("AlertService: pickup Teams workflow failed: %s", exc)
+            return False, str(exc)
+
     def _build_body_text(
         self,
         *,
