@@ -66,4 +66,3 @@ class TestPickupFulfillment(TransactionCase):
             "line_items": [{"requires_shipping": True}],
         })
         self.assertEqual(ambiguous_vals["state"], "manual_required")
-
