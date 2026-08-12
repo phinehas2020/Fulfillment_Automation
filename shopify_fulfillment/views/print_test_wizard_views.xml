@@ -23,9 +23,4 @@
         <field name="target">new</field>
     </record>
 
-    <menuitem id="menu_shopify_test_print" 
-              name="Test Printer" 
-              parent="menu_shopify_root" 
-              action="action_print_test_wizard" 
-              sequence="99"/>
 </odoo>
