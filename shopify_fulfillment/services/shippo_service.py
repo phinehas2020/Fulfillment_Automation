@@ -36,6 +36,7 @@ def sanitize_phone(phone: str) -> str:
     return phone.strip()
 
 class ShippoService:
+    provider_name = "shippo"
     API_URL = "https://api.goshippo.com"
     RATE_REQUEST_ATTEMPTS = 3
     TRANSIENT_RATE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -441,6 +442,8 @@ class ShippoService:
             "label_file_type": "ZPLII",
             "async": False
         }
+        if rate_obj.get("_purchase_reference"):
+            payload["metadata"] = str(rate_obj["_purchase_reference"])[:100]
         
         _logger.info("Shippo: Buying label for rate %s", rate_id)
 
@@ -450,9 +453,25 @@ class ShippoService:
             
             if resp.status_code >= 400:
                 _logger.error("Shippo Transaction Error: %s", resp.text)
-                return None
+                if resp.status_code in self.TRANSIENT_RATE_STATUS_CODES:
+                    return {
+                        "error": f"Shippo returned HTTP {resp.status_code} after label submission.",
+                        "purchase_uncertain": True,
+                    }
+                return {"error": resp.text or f"Shippo HTTP {resp.status_code}"}
             
-            data = resp.json()
+            try:
+                data = resp.json()
+            except (TypeError, ValueError):
+                return {
+                    "error": "Shippo returned an unreadable success response. Reconcile before retrying.",
+                    "purchase_uncertain": True,
+                }
+            if not isinstance(data, dict):
+                return {
+                    "error": "Shippo returned a malformed success response. Reconcile before retrying.",
+                    "purchase_uncertain": True,
+                }
             status = data.get("status")
             label_file_type = data.get("label_file_type")
             label_url = data.get("label_url")
@@ -460,6 +479,15 @@ class ShippoService:
             _logger.info("Shippo Transaction Result - Status: %s, FileType: %s, URL: %s", 
                         status, label_file_type, label_url)
             
+            if status in ("WAITING", "QUEUED") or not status:
+                return {
+                    "error": f"Shippo transaction is {status or 'missing a status'}. Reconcile before retrying.",
+                    "purchase_uncertain": True,
+                    "shippo_transaction_id": data.get("object_id"),
+                    "tracking_number": data.get("tracking_number"),
+                    "label_url": label_url,
+                }
+
             if status != "SUCCESS":
                 messages = data.get("messages", [])
                 error_msg = "Unknown error"
@@ -494,6 +522,17 @@ class ShippoService:
                     _logger.warning("Failed to download ZPL from %s", label_url)
             else:
                 _logger.warning("No label_url in Shippo response")
+
+            if not data.get("object_id") or not data.get("tracking_number") or not zpl_data:
+                return {
+                    "error": "Shippo created a transaction but returned incomplete label data. Reconcile before retrying.",
+                    "purchase_uncertain": True,
+                    "shippo_transaction_id": data.get("object_id"),
+                    "tracking_number": data.get("tracking_number"),
+                    "tracking_url": data.get("tracking_url_provider"),
+                    "label_url": label_url,
+                    "label_zpl": zpl_data,
+                }
             
             return {
                 "shippo_transaction_id": data.get("object_id"),
@@ -507,6 +546,12 @@ class ShippoService:
                 "rate_currency": rate_obj.get("currency"),
             }
 
+        except requests.RequestException as e:
+            _logger.exception("Shippo Purchase Response Uncertain: %s", e)
+            return {
+                "error": "Shippo label purchase returned no response. Reconcile before retrying.",
+                "purchase_uncertain": True,
+            }
         except Exception as e:
             _logger.exception("Shippo Purchase Failed: %s", e)
             return None

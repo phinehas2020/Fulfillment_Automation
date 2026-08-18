@@ -16,7 +16,9 @@ class ShopifyOrderLine(models.Model):
     variant_title = fields.Char()
     quantity = fields.Integer(default=1)
     weight = fields.Float(help="Weight in grams")
+    unit_price = fields.Float(help="Marketplace unit price at order time")
+    amazon_asin = fields.Char(string="Amazon ASIN", readonly=True)
+    amazon_order_item_id = fields.Char(string="Amazon Order Item ID", readonly=True)
     requires_shipping = fields.Boolean(default=True)
-
 
 

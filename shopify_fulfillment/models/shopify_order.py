@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import timezone
 from html import escape
 from typing import Optional
 
@@ -16,13 +17,8 @@ from ..services.pickup_utils import (
 _logger = logging.getLogger(__name__)
 
 
-SHIPPING_METHOD_STOP_WORDS = {
-    "air",
-    "delivery",
-    "mail",
-    "shipping",
-    "service",
-}
+class ShippingPolicyHold(exceptions.UserError):
+    """A deliberate pre-purchase hold requiring human review."""
 
 
 class ShopifyOrder(models.Model):
@@ -103,6 +99,17 @@ class ShopifyOrder(models.Model):
     created_at = fields.Datetime()
     raw_payload = fields.Text()
     requested_shipping_method = fields.Char(string="Requested Shipping Method")
+    order_currency = fields.Char(string="Order Currency", default="USD")
+    shipping_amount_paid = fields.Float(string="Customer Shipping Paid")
+    amazon_order_id = fields.Char(string="Amazon Order ID", index=True, readonly=True)
+    amazon_earliest_ship_at = fields.Datetime(string="Amazon Earliest Ship", readonly=True)
+    amazon_latest_ship_at = fields.Datetime(string="Amazon Latest Ship", readonly=True)
+    amazon_earliest_delivery_at = fields.Datetime(
+        string="Amazon Earliest Delivery", readonly=True
+    )
+    amazon_latest_delivery_at = fields.Datetime(
+        string="Amazon Latest Delivery", readonly=True
+    )
     fulfillment_type = fields.Selection(
         [("shipping", "Shipping"), ("pickup", "Pickup")],
         string="Fulfillment Type",
@@ -312,7 +319,7 @@ class ShopifyOrder(models.Model):
         tags = (payload.get("tags") or "").lower()
         if source_name == "pos":
             return "pos"
-        if source_name == "amazon" or "amazon" in tags:
+        if source_name.startswith("amazon") or "amazon" in tags:
             return "amazon"
         return "shopify"
 
@@ -1475,6 +1482,11 @@ class ShopifyOrder(models.Model):
         )
         line_vals = []
         for line in payload.get("line_items", []):
+            properties = {
+                str(prop.get("name") or "").strip().lower(): prop.get("value")
+                for prop in (line.get("properties") or [])
+                if isinstance(prop, dict)
+            }
             line_vals.append(
                 (
                     0,
@@ -1488,6 +1500,8 @@ class ShopifyOrder(models.Model):
                         "variant_title": line.get("variant_title"),
                         "quantity": line.get("quantity") or 0,
                         "weight": line.get("grams") or 0.0,
+                        "unit_price": line.get("price") or 0.0,
+                        "amazon_asin": properties.get("asin") or "",
                         "requires_shipping": line.get("requires_shipping", True),
                     },
                 )
@@ -1496,19 +1510,62 @@ class ShopifyOrder(models.Model):
         
         shipping_lines = payload.get("shipping_lines") or []
         requested_method = False
+        shipping_amount_paid = 0.0
         if shipping_lines:
             requested_method = (
                 shipping_lines[0].get("title")
                 or shipping_lines[0].get("code")
                 or shipping_lines[0].get("carrier_identifier")
             )
+            try:
+                shipping_amount_paid = float(shipping_lines[0].get("price") or 0.0)
+            except (TypeError, ValueError):
+                shipping_amount_paid = 0.0
+
+        note_attributes = {
+            str(item.get("name") or "").strip().lower(): item.get("value")
+            for item in (payload.get("note_attributes") or [])
+            if isinstance(item, dict)
+        }
+
+        def _marketplace_datetime(name):
+            value = note_attributes.get(name.lower())
+            if not value:
+                return False
+            try:
+                from dateutil import parser
+
+                dt = parser.parse(str(value))
+                if dt.tzinfo:
+                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                return dt
+            except (TypeError, ValueError, OverflowError):
+                _logger.warning(
+                    "Order %s: invalid marketplace timestamp %s=%r",
+                    payload.get("name") or payload.get("id"),
+                    name,
+                    value,
+                )
+                return False
+
+        order_currency = (
+            payload.get("currency")
+            or ((payload.get("current_total_price_set") or {}).get("shop_money") or {}).get(
+                "currency_code"
+            )
+            or "USD"
+        )
         
         created_at = False
         if payload.get("created_at"):
             try:
                 from dateutil import parser
                 dt = parser.parse(payload.get("created_at"))
-                created_at = dt.replace(tzinfo=None)
+                created_at = (
+                    dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    if dt.tzinfo
+                    else dt
+                )
             except Exception:
                 pass
         
@@ -1530,6 +1587,19 @@ class ShopifyOrder(models.Model):
             "line_ids": line_vals,
             "source": source,
             "requested_shipping_method": requested_method,
+            "order_currency": order_currency,
+            "shipping_amount_paid": shipping_amount_paid,
+            "amazon_order_id": note_attributes.get("amazon order id") or False,
+            "amazon_earliest_ship_at": _marketplace_datetime(
+                "amazon earliest ship date"
+            ),
+            "amazon_latest_ship_at": _marketplace_datetime("amazon latest ship date"),
+            "amazon_earliest_delivery_at": _marketplace_datetime(
+                "amazon earliest delivery date"
+            ),
+            "amazon_latest_delivery_at": _marketplace_datetime(
+                "amazon latest delivery date"
+            ),
             "shopify_location_id": self._shopify_location_id_from_payload(payload),
         }
         vals.update(self._fulfillment_classification_vals(payload))
@@ -1638,6 +1708,13 @@ class ShopifyOrder(models.Model):
             "shipping_phone",
             "raw_payload",
             "requested_shipping_method",
+            "order_currency",
+            "shipping_amount_paid",
+            "amazon_order_id",
+            "amazon_earliest_ship_at",
+            "amazon_latest_ship_at",
+            "amazon_earliest_delivery_at",
+            "amazon_latest_delivery_at",
             "source",
             "shopify_location_id",
         )
@@ -1687,7 +1764,7 @@ class ShopifyOrder(models.Model):
             if single_shipment:
                 shipments_to_refund |= single_shipment
 
-            order._request_shippo_refunds_for_shipments(shipments_to_refund)
+            order._request_label_cancellations_for_shipments(shipments_to_refund)
 
             if order.print_job_ids:
                 # Print jobs are not unlinkable by default users, so elevate for cleanup.
@@ -1710,6 +1787,98 @@ class ShopifyOrder(models.Model):
             if single_shipment and (not group_id or single_group_id != group_id):
                 if single_shipment.exists():
                     single_shipment.unlink()
+
+    def _request_label_cancellations_for_shipments(self, shipments):
+        """Cancel/refund labels through the provider that sold each label."""
+        self.ensure_one()
+        ambiguous = shipments.filtered(
+            lambda shipment: shipment.purchase_state
+            in ("pending", "submitting", "uncertain")
+            or shipment.refund_status == "uncertain"
+        )
+        if ambiguous:
+            identifiers = ", ".join(
+                shipment.tracking_number
+                or shipment.provider_shipment_id
+                or str(shipment.id)
+                for shipment in ambiguous
+            )
+            raise exceptions.UserError(
+                "Reset stopped because these label purchases must be reconciled first: "
+                + identifiers
+            )
+
+        amazon_shipments = shipments.filtered(
+            lambda shipment: shipment.purchase_provider == "amazon_shipping"
+        )
+        if amazon_shipments:
+            from odoo.addons.shopify_fulfillment.services.amazon_shipping_service import (
+                AmazonShippingService,
+            )
+
+            amazon = AmazonShippingService.from_env(
+                self.env, require_enabled=False
+            )
+            if not amazon:
+                raise exceptions.UserError(
+                    "Amazon Shipping credentials are unavailable. Amazon labels were not "
+                    "cancelled and the reset was stopped."
+                )
+            failures = []
+            for shipment in amazon_shipments:
+                if shipment.refund_status in ("queued", "pending", "success"):
+                    continue
+                if not shipment.provider_shipment_id:
+                    failures.append(
+                        f"{shipment.tracking_number or shipment.id}: missing Amazon shipment ID"
+                    )
+                    continue
+                result = amazon.cancel_shipment(shipment.provider_shipment_id)
+                if result.get("error"):
+                    cancel_status = (
+                        "uncertain"
+                        if result.get("status") == "uncertain"
+                        else "error"
+                    )
+                    shipment.write({
+                        "refund_status": cancel_status,
+                        "refund_error_message": result.get("error"),
+                    })
+                    failures.append(
+                        f"{shipment.tracking_number or shipment.provider_shipment_id}: "
+                        f"{result.get('error')}"
+                    )
+                    continue
+                shipment.write({
+                    "refund_status": "success",
+                    "refund_requested_at": fields.Datetime.now(),
+                    "refund_error_message": False,
+                    "provider_cancel_reference": shipment.provider_shipment_id,
+                })
+            if failures:
+                raise exceptions.UserError(
+                    "Reset stopped because not all Amazon labels could be cancelled:\n- "
+                    + "\n- ".join(failures)
+                )
+
+        shippo_shipments = shipments.filtered(
+            lambda shipment: shipment.purchase_provider == "shippo"
+            or (
+                not shipment.purchase_provider
+                and bool(shipment.shippo_transaction_id)
+            )
+        )
+        if shippo_shipments:
+            self._request_shippo_refunds_for_shipments(shippo_shipments)
+
+        unsupported = shipments - amazon_shipments - shippo_shipments
+        unsupported = unsupported.filtered(
+            lambda shipment: shipment.tracking_number or shipment.label_zpl
+        )
+        if unsupported:
+            raise exceptions.UserError(
+                "Reset stopped because one or more labels have no supported cancellation provider."
+            )
 
     def _request_shippo_refunds_for_shipments(self, shipments):
         """Request Shippo refunds before resetting local shipment records."""
@@ -1823,9 +1992,50 @@ class ShopifyOrder(models.Model):
                     _logger.warning("Failed to create partner for order %s during process: %s", order.id, partner_err)
                 
                 order._process_order_inner()
+            except ShippingPolicyHold as exc:
+                _logger.warning("Shipping policy held order %s: %s", order.id, exc)
+                order.write({"state": "manual_required", "error_message": str(exc)})
             except Exception as exc:  # pylint: disable=broad-except
                 _logger.exception("Order processing failed for %s", order.id)
                 order.write({"state": "error", "error_message": str(exc)})
+
+    def _ensure_amazon_shipping_metadata(self):
+        """Backfill marketplace promise fields for orders created before v0.5."""
+        self.ensure_one()
+        if self.source != "amazon" or not self.raw_payload:
+            return
+        if self.amazon_order_id and self.amazon_latest_delivery_at:
+            return
+        try:
+            payload = json.loads(self.raw_payload)
+        except (TypeError, ValueError):
+            return
+        attributes = {
+            str(item.get("name") or "").strip().lower(): item.get("value")
+            for item in (payload.get("note_attributes") or [])
+            if isinstance(item, dict)
+        }
+        updates = {}
+        mapping = {
+            "amazon_order_id": "amazon order id",
+            "amazon_earliest_ship_at": "amazon earliest ship date",
+            "amazon_latest_ship_at": "amazon latest ship date",
+            "amazon_earliest_delivery_at": "amazon earliest delivery date",
+            "amazon_latest_delivery_at": "amazon latest delivery date",
+        }
+        for field_name, attribute_name in mapping.items():
+            if getattr(self, field_name):
+                continue
+            value = attributes.get(attribute_name)
+            if not value:
+                continue
+            updates[field_name] = (
+                value
+                if field_name == "amazon_order_id"
+                else self._provider_datetime(value)
+            )
+        if updates:
+            self.sudo().write(updates)
 
     def _send_error_alert(self, title: str, message: str, extra: Optional[dict] = None):
         self.ensure_one()
@@ -1884,6 +2094,21 @@ class ShopifyOrder(models.Model):
         if self.fulfillment_type == "pickup":
             self._process_pickup_order()
             return
+
+        self._ensure_amazon_shipping_metadata()
+        if self.source == "amazon" and not self.amazon_latest_delivery_at:
+            raise ShippingPolicyHold(
+                "Amazon's required delivery deadline is missing. Review the "
+                "marketplace order before buying a label."
+            )
+        if (
+            self.source == "amazon"
+            and self.amazon_latest_ship_at
+            and fields.Datetime.now() > self.amazon_latest_ship_at
+        ):
+            raise ShippingPolicyHold(
+                "Amazon's latest ship-by time has passed. Review the order before buying a label."
+            )
 
         # Step 0: Risk Check
         try:
@@ -1984,7 +2209,7 @@ class ShopifyOrder(models.Model):
                     len(shipments_with_labels),
                     len(group.shipment_ids),
                 )
-                self._request_shippo_refunds_for_shipments(group.shipment_ids)
+                self._request_label_cancellations_for_shipments(group.shipment_ids)
                 stale_jobs = self.print_job_ids.filtered(
                     lambda j: j.shipment_id in group.shipment_ids
                 )
@@ -2041,6 +2266,26 @@ class ShopifyOrder(models.Model):
         # Import Shippo service
         from odoo.addons.shopify_fulfillment.services.shippo_service import ShippoService
         shippo = ShippoService.from_env(self.env)
+        shipping_service = shippo
+
+        if self.source == "amazon":
+            from odoo.addons.shopify_fulfillment.services.amazon_shipping_service import (
+                AmazonShippingService,
+            )
+
+            amazon_shipping = AmazonShippingService.from_env(self.env)
+            if amazon_shipping:
+                shipping_service = amazon_shipping
+            else:
+                amazon_enabled = AmazonShippingService._truthy(
+                    self.env["ir.config_parameter"].sudo().get_param(
+                        "amazon_shipping.enabled", "False"
+                    )
+                )
+                if amazon_enabled:
+                    raise exceptions.UserError(
+                        "Amazon Buy Shipping is enabled but its LWA credentials are incomplete."
+                    )
 
         # Process each packed box
         shipments_created = []
@@ -2050,7 +2295,7 @@ class ShopifyOrder(models.Model):
                     packed_box=packed_box,
                     group=group,
                     sequence=sequence,
-                    shippo=shippo
+                    shipping_service=shipping_service,
                 )
                 if shipment:
                     shipments_created.append(shipment)
@@ -2062,6 +2307,23 @@ class ShopifyOrder(models.Model):
                     "error_message": f"Box {sequence} failed: {str(e)}"
                 })
                 return
+
+        deferred_shipments = group.shipment_ids.filtered(
+            lambda shipment: shipment.purchase_state
+            in ("pending", "submitting")
+        )
+        if deferred_shipments:
+            group.write({"state": "pending"})
+            if shipments_created:
+                self.shipment_id = shipments_created[0].id
+                self.box_id = shipments_created[0].box_id.id
+            _logger.info(
+                "Order %s: committed %d Amazon purchase intent(s); labels will be "
+                "purchased post-commit",
+                self.id,
+                len(deferred_shipments),
+            )
+            return
 
         # Update group state
         group.write({"state": "complete"})
@@ -2125,14 +2387,234 @@ class ShopifyOrder(models.Model):
         )
         return result
 
-    def _process_single_box(self, packed_box, group, sequence: int, shippo) -> Optional[models.Model]:
+    @staticmethod
+    def _provider_datetime(value):
+        """Convert provider ISO timestamps to Odoo's naive UTC datetime."""
+        if not value:
+            return False
+        if hasattr(value, "tzinfo"):
+            parsed = value
+        else:
+            try:
+                from dateutil import parser
+
+                parsed = parser.parse(str(value))
+            except (TypeError, ValueError, OverflowError):
+                return False
+        if parsed.tzinfo:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    def _register_amazon_purchase_postcommit(self, shipment_id):
+        """Run Amazon purchase only after its local intent has committed."""
+        self.ensure_one()
+        database_name = self.env.cr.dbname
+        order_id = self.id
+
+        def _purchase_after_commit():
+            from odoo import SUPERUSER_ID, api as odoo_api, registry
+
+            with registry(database_name).cursor() as cursor:
+                callback_env = odoo_api.Environment(cursor, SUPERUSER_ID, {})
+                callback_order = callback_env["shopify.order"].browse(order_id)
+                try:
+                    callback_order._execute_amazon_purchase_intent(shipment_id)
+                    cursor.commit()
+                except Exception:  # pylint: disable=broad-except
+                    _logger.exception(
+                        "Amazon post-commit purchase failed for shipment intent %s",
+                        shipment_id,
+                    )
+                    shipment = callback_env["fulfillment.shipment"].browse(
+                        shipment_id
+                    )
+                    if shipment.exists() and shipment.purchase_state == "submitting":
+                        shipment.write({"purchase_state": "uncertain"})
+                        shipment.order_id.write({
+                            "state": "manual_required",
+                            "error_message": (
+                                "Amazon label purchase stopped in an uncertain state. "
+                                "Reconcile in Amazon before retrying."
+                            ),
+                        })
+                    cursor.commit()
+
+        self.env.cr.postcommit.add(_purchase_after_commit)
+
+    def _execute_amazon_purchase_intent(self, shipment_id):
+        """Execute one committed Amazon label intent without automatic retry."""
+        self.ensure_one()
+        shipment = self.env["fulfillment.shipment"].browse(shipment_id).exists()
+        if not shipment or shipment.order_id != self:
+            return
+        if shipment.purchase_state != "pending":
+            return
+        if shipment.group_id.state == "error" or self.state in (
+            "error",
+            "manual_required",
+        ):
+            shipment.write({"purchase_state": "error"})
+            return
+
+        try:
+            bundle = json.loads(shipment.provider_payload_json or "{}")
+        except (TypeError, ValueError):
+            shipment.write({"purchase_state": "error"})
+            self.write({
+                "state": "manual_required",
+                "error_message": "Amazon purchase intent payload is invalid.",
+            })
+            return
+
+        selected_rate = bundle.get("selected_rate") or {}
+        rates = bundle.get("rates") or []
+        rate_meta = bundle.get("rate_meta") or {}
+        selection_details = bundle.get("selection_details") or {}
+
+        # This isolated post-commit cursor deliberately commits the inflight
+        # marker before the external financial mutation. A worker crash can
+        # strand an intent for reconciliation, but cannot silently retry it.
+        shipment.write({"purchase_state": "submitting"})
+        self.env.cr.commit()
+
+        from odoo.addons.shopify_fulfillment.services.amazon_shipping_service import (
+            AmazonShippingPurchaseUncertain,
+            AmazonShippingService,
+        )
+
+        amazon = AmazonShippingService.from_env(self.env)
+        if not amazon:
+            shipment.write({"purchase_state": "error"})
+            self.write({
+                "state": "manual_required",
+                "error_message": "Amazon Shipping credentials are unavailable.",
+            })
+            return
+
+        try:
+            shipment_vals = amazon.purchase_label(selected_rate)
+        except AmazonShippingPurchaseUncertain as exc:
+            shipment.write({
+                "purchase_state": "uncertain",
+                "provider_shipment_id": exc.shipment_id or False,
+                "provider_response_json": json.dumps(
+                    exc.response_data or {}, sort_keys=True
+                ),
+            })
+            self.shipment_group_id.write({"state": "error"})
+            self.write({
+                "state": "manual_required",
+                "error_message": str(exc),
+            })
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            shipment.write({"purchase_state": "error"})
+            self.shipment_group_id.write({"state": "error"})
+            self.write({
+                "state": "manual_required",
+                "error_message": str(exc),
+            })
+            return
+
+        if not shipment_vals or shipment_vals.get("error"):
+            shipment.write({"purchase_state": "error"})
+            self.shipment_group_id.write({"state": "error"})
+            self.write({
+                "state": "manual_required",
+                "error_message": (
+                    (shipment_vals or {}).get("error")
+                    or "Amazon label purchase returned no result."
+                ),
+            })
+            return
+
+        shipment.write({
+            "purchase_state": "purchased",
+            "provider_shipment_id": shipment_vals.get("provider_shipment_id"),
+            "provider_rate_id": shipment_vals.get("provider_rate_id")
+            or shipment.provider_rate_id,
+            "provider_service_id": shipment_vals.get("provider_service_id")
+            or shipment.provider_service_id,
+            "provider_response_json": shipment_vals.get("provider_response_json"),
+            "tracking_number": shipment_vals.get("tracking_number"),
+            "tracking_url": shipment_vals.get("tracking_url"),
+            "label_url": shipment_vals.get("label_url"),
+            "label_zpl": shipment_vals.get("label_zpl"),
+            "label_format": shipment_vals.get("label_format") or "ZPL",
+            "carrier": shipment_vals.get("carrier"),
+            "service": shipment_vals.get("service"),
+            "rate_amount": shipment_vals.get("rate_amount"),
+            "rate_currency": shipment_vals.get("rate_currency"),
+            "promised_delivery_at": self._provider_datetime(
+                shipment_vals.get("promised_delivery_at")
+            ),
+            "purchased_at": fields.Datetime.now(),
+        })
+
+        try:
+            self.env["fulfillment.rate.audit"].sudo().log_purchase(
+                order=self,
+                shipment=shipment,
+                group=shipment.group_id,
+                sequence=shipment.sequence,
+                weight_grams=shipment.total_weight,
+                rates=rates,
+                selected_rate=selected_rate,
+                is_residential=rate_meta.get("is_residential"),
+                rate_meta=rate_meta,
+                selection=selection_details,
+            )
+        except Exception:
+            _logger.exception(
+                "Order %s: failed to record Amazon rate audit",
+                self.id,
+            )
+
+        self._finalize_deferred_purchase_group()
+
+    def _finalize_deferred_purchase_group(self):
+        self.ensure_one()
+        group = self.shipment_group_id
+        if not group:
+            return
+        shipments = group.shipment_ids
+        if shipments.filtered(lambda shipment: shipment.purchase_state in ("error", "uncertain")):
+            group.write({"state": "error"})
+            self.write({"state": "manual_required"})
+            return
+        if shipments.filtered(
+            lambda shipment: shipment.purchase_state != "purchased"
+        ):
+            group.write({"state": "partial"})
+            return
+
+        group.write({"state": "complete"})
+        for shipment in shipments:
+            existing_job = self.print_job_ids.filtered(
+                lambda job: job.shipment_id == shipment and job.job_type == "label"
+            )
+            if not existing_job:
+                self.env["print.job"].create({
+                    "order_id": self.id,
+                    "shipment_id": shipment.id,
+                    "job_type": "label",
+                    "zpl_data": shipment.label_zpl or "",
+                    "printer_id": False,
+                })
+        first_shipment = shipments.sorted(lambda shipment: (shipment.sequence, shipment.id))[:1]
+        if first_shipment:
+            self.shipment_id = first_shipment.id
+            self.box_id = first_shipment.box_id.id
+        self.write({"state": "ready_to_ship", "error_message": False})
+
+    def _process_single_box(self, packed_box, group, sequence: int, shipping_service) -> Optional[models.Model]:
         """Process a single box: rate shop, purchase label, create shipment, print job.
 
         Args:
             packed_box: PackedBox instance from packer
             group: fulfillment.shipment.group record
             sequence: Box number (1, 2, 3...)
-            shippo: ShippoService instance
+            shipping_service: ShippoService or AmazonShippingService instance
 
         Returns:
             fulfillment.shipment record or None
@@ -2150,36 +2632,64 @@ class ShopifyOrder(models.Model):
         )
 
         shipment_vals = None
+        rate_meta = {
+            "is_residential": None,
+            "validation_results": None,
+            "provider": "mock",
+        }
+        selection_details = {}
+        provider_name = getattr(shipping_service, "provider_name", "mock")
 
-        shippo_meta = {"is_residential": None, "validation_results": None}
-
-        if shippo:
-            # Get rates for this specific box with its weight
-            rates, shippo_meta = shippo.get_rates_for_box(
-                order=self,
-                box=box_record,
-                total_weight_grams=packed_box.total_weight_with_box,
-                sender_company=self.env.company,
-            )
-
-            # Filter out excluded shipping services (comma-separated substrings)
-            excluded_raw = self.env["ir.config_parameter"].sudo().get_param(
-                "fulfillment.excluded_services", "ground saver"
-            )
-            excluded_terms = [
-                term.strip().lower()
-                for term in (excluded_raw or "").split(",")
-                if term.strip()
-            ]
-            original_count = len(rates)
-            rates = [
-                r
-                for r in rates
-                if not any(
-                    term in (r.get("servicelevel", {}).get("name") or "").lower()
-                    for term in excluded_terms
+        if shipping_service:
+            if provider_name == "amazon_shipping":
+                rates, rate_meta = shipping_service.get_rates_for_box(
+                    order=self,
+                    packed_box=packed_box,
+                    box=box_record,
+                    total_weight_grams=packed_box.total_weight_with_box,
+                    sender_company=self.env.company,
+                    sequence=sequence,
                 )
-            ]
+            else:
+                rates, rate_meta = shipping_service.get_rates_for_box(
+                    order=self,
+                    box=box_record,
+                    total_weight_grams=packed_box.total_weight_with_box,
+                    sender_company=self.env.company,
+                )
+                rate_meta["provider"] = "shippo"
+
+            # Exclusions use stable service/carrier IDs, never display names.
+            config_params = self.env["ir.config_parameter"].sudo()
+            excluded_service_ids = {
+                value.strip()
+                for value in config_params.get_param(
+                    "fulfillment.excluded_service_ids",
+                    "ups_ground_saver,UPS_PTP_GROUNDSAVER",
+                ).split(",")
+                if value.strip()
+            }
+            excluded_carrier_ids = {
+                value.strip()
+                for value in config_params.get_param(
+                    "fulfillment.excluded_carrier_ids", ""
+                ).split(",")
+                if value.strip()
+            }
+            original_count = len(rates)
+
+            def _rate_is_allowed(rate):
+                amazon_meta = rate.get("_amazon") or {}
+                service_id = (rate.get("servicelevel") or {}).get("token")
+                carrier_id = rate.get("carrier_account") or amazon_meta.get(
+                    "carrier_id"
+                )
+                return (
+                    service_id not in excluded_service_ids
+                    and carrier_id not in excluded_carrier_ids
+                )
+
+            rates = [rate for rate in rates if _rate_is_allowed(rate)]
             if original_count != len(rates):
                 _logger.info(
                     "Order %s Box %d: Filtered out %d excluded services",
@@ -2190,85 +2700,44 @@ class ShopifyOrder(models.Model):
 
             if not rates:
                 raise exceptions.UserError(
-                    f"Box {sequence}: Shippo returned no rates (Check address/credentials)"
+                    f"Box {sequence}: {provider_name} returned no usable rates"
                 )
 
-            # Select rate (cheapest or requested method)
-            selected_rate = self._select_shipping_rate(rates)
-            shipment_vals = shippo.purchase_label(selected_rate)
-            
-            # Carrier fallback: If USPS fails with address validation, try UPS
-            if shipment_vals and shipment_vals.get("error"):
-                error_codes = shipment_vals.get("error_codes", [])
-                failed_carrier = shipment_vals.get("failed_carrier", "")
-                
-                # Check if this is an address validation error from USPS
-                is_address_error = "failed_address_validation" in error_codes
-                is_usps = failed_carrier.upper() == "USPS" or "USPS" in selected_rate.get("provider", "")
-                
-                if is_address_error and is_usps:
-                    _logger.warning(
-                        "Order %s Box %d: USPS address validation failed, attempting UPS fallback",
-                        self.id, sequence
-                    )
-                    
-                    # Find a UPS rate as fallback
-                    ups_rates = [
-                        r for r in rates 
-                        if r.get("provider", "").upper() == "UPS"
-                    ]
-                    
-                    if ups_rates:
-                        # Re-run selector so expedited requests cannot downgrade on carrier fallback.
-                        ups_rate = self._select_shipping_rate(ups_rates)
-                        _logger.info(
-                            "Order %s Box %d: Trying UPS %s at $%s",
-                            self.id, sequence,
-                            ups_rate.get("servicelevel", {}).get("name"),
-                            ups_rate.get("amount")
-                        )
-                        shipment_vals = shippo.purchase_label(ups_rate)
-
-                        if shipment_vals and not shipment_vals.get("error"):
-                            selected_rate = ups_rate
-                            _logger.info(
-                                "Order %s Box %d: UPS fallback successful!",
-                                self.id, sequence
-                            )
-                    else:
-                        _logger.warning(
-                            "Order %s Box %d: No UPS rates available for fallback",
-                            self.id, sequence
-                        )
+            selected_rate, selection_details = self._select_shipping_rate(
+                rates,
+                return_details=True,
+                audit_context={
+                    "group": group,
+                    "sequence": sequence,
+                    "weight_grams": packed_box.total_weight_with_box,
+                    "is_residential": rate_meta.get("is_residential"),
+                    "rate_meta": rate_meta,
+                },
+            )
         else:
-            # No Shippo key configured. Only fall back to the mock API when
-            # explicitly enabled for testing; otherwise stop rather than
-            # "shipping" with fake labels and fake tracking numbers.
+            # No shipping service configured. Only use the mock API when
+            # explicitly enabled for testing.
             allow_mock = self.env["ir.config_parameter"].sudo().get_param(
                 "fulfillment.allow_mock_api", "False"
             )
             if allow_mock.lower() not in ("true", "1", "yes"):
                 raise exceptions.UserError(
-                    f"Box {sequence}: Shippo API key is not configured. Set "
-                    "shippo.api_key (or enable fulfillment.allow_mock_api for testing)."
+                    f"Box {sequence}: no shipping label provider is configured."
                 )
             api_client = self._get_shopify_api()
             rates = api_client.get_shipping_rates(self)
             if not rates:
                 raise exceptions.UserError(f"Box {sequence}: Mock API returned no rates")
-            cheapest = sorted(rates, key=lambda r: r.get("amount", 0))[0]
-            selected_rate = cheapest
-            shipment_vals = api_client.purchase_label(self, cheapest.get("id"))
+            selected_rate = sorted(rates, key=lambda rate: rate.get("amount", 0))[0]
+            selection_details = {
+                "policy_version": "mock",
+                "reason": "mock_cheapest",
+                "cheapest_eligible_amount": selected_rate.get("amount") or 0,
+                "rejection_summary": "[]",
+            }
 
-        if not shipment_vals:
-            raise exceptions.UserError(f"Box {sequence}: Label purchase failed (unknown error)")
-
-        if shipment_vals.get("error"):
-            raise exceptions.UserError(f"Box {sequence}: {shipment_vals['error']}")
-
-        # Create shipment record. Per-line unit counts are persisted so the
-        # Shopify fulfillment push can attach each box's tracking number to
-        # exactly the items that shipped in that box.
+        selected_servicelevel = selected_rate.get("servicelevel") or {}
+        selected_amazon = selected_rate.get("_amazon") or {}
         shipment = self.env["fulfillment.shipment"].create({
             "order_id": self.id,
             "group_id": group.id,
@@ -2277,6 +2746,161 @@ class ShopifyOrder(models.Model):
             "line_ids": [(6, 0, line_ids)],
             "line_quantities": json.dumps(packed_box.line_quantities),
             "total_weight": packed_box.total_weight_with_box,
+            "purchase_provider": provider_name,
+            "provider_rate_id": selected_rate.get("object_id") or selected_rate.get("id"),
+            "provider_service_id": selected_servicelevel.get("token"),
+            "purchase_state": "pending",
+            "carrier": selected_rate.get("provider"),
+            "service": selected_servicelevel.get("name"),
+            "rate_amount": selected_rate.get("amount") or 0.0,
+            "rate_currency": selected_rate.get("currency") or "USD",
+            "promised_delivery_at": self._provider_datetime(
+                selected_rate.get("arrives_by")
+            ),
+            "label_format": (
+                (selected_amazon.get("document_spec") or {}).get("format")
+                if selected_amazon
+                else "ZPLII"
+            ),
+        })
+        selected_rate["_purchase_reference"] = (
+            f"{self.order_name or self.id}-box-{sequence}-intent-{shipment.id}"
+        )
+        shipment.write({
+            "provider_purchase_reference": (
+                selected_amazon.get("package_reference")
+                or selected_rate["_purchase_reference"]
+            ),
+            "provider_payload_json": json.dumps(
+                {
+                    "selected_rate": selected_rate,
+                    "rates": rates,
+                    "rate_meta": rate_meta,
+                    "selection_details": selection_details,
+                },
+                sort_keys=True,
+            ),
+        })
+
+        if provider_name == "amazon_shipping":
+            self._register_amazon_purchase_postcommit(shipment.id)
+            return shipment
+
+        try:
+            if shipping_service:
+                shipment_vals = shipping_service.purchase_label(selected_rate)
+            else:
+                shipment_vals = api_client.purchase_label(
+                    self, selected_rate.get("id")
+                )
+        except Exception as exc:
+            from odoo.addons.shopify_fulfillment.services.amazon_shipping_service import (
+                AmazonShippingPurchaseUncertain,
+            )
+
+            if isinstance(exc, AmazonShippingPurchaseUncertain):
+                shipment.write({"purchase_state": "uncertain"})
+            else:
+                shipment.write({"purchase_state": "error"})
+            raise
+
+        # Carrier fallback: If USPS fails with address validation, try UPS.
+        if shipment_vals and shipment_vals.get("purchase_uncertain"):
+            shipment.write({
+                "purchase_state": "uncertain",
+                "shippo_transaction_id": shipment_vals.get("shippo_transaction_id"),
+                "tracking_number": shipment_vals.get("tracking_number"),
+                "tracking_url": shipment_vals.get("tracking_url"),
+                "label_url": shipment_vals.get("label_url"),
+                "label_zpl": shipment_vals.get("label_zpl"),
+            })
+            raise ShippingPolicyHold(
+                f"Box {sequence}: label purchase status is uncertain. Reconcile with "
+                "the provider before retrying."
+            )
+
+        if provider_name == "shippo" and shipment_vals and shipment_vals.get("error"):
+            error_codes = shipment_vals.get("error_codes", [])
+            failed_carrier = shipment_vals.get("failed_carrier", "")
+            is_address_error = "failed_address_validation" in error_codes
+            is_usps = failed_carrier.upper() == "USPS" or "USPS" in selected_rate.get(
+                "provider", ""
+            )
+
+            if is_address_error and is_usps:
+                _logger.warning(
+                    "Order %s Box %d: USPS address validation failed, attempting UPS fallback",
+                    self.id,
+                    sequence,
+                )
+                ups_rates = [
+                    rate
+                    for rate in rates
+                    if rate.get("provider", "").upper() == "UPS"
+                ]
+                if ups_rates:
+                    ups_rate, selection_details = self._select_shipping_rate(
+                        ups_rates, return_details=True
+                    )
+                    _logger.info(
+                        "Order %s Box %d: Trying UPS %s at $%s",
+                        self.id,
+                        sequence,
+                        ups_rate.get("servicelevel", {}).get("name"),
+                        ups_rate.get("amount"),
+                    )
+                    shipment.write({
+                        "provider_rate_id": ups_rate.get("object_id"),
+                        "provider_service_id": (ups_rate.get("servicelevel") or {}).get("token"),
+                        "carrier": ups_rate.get("provider"),
+                        "service": (ups_rate.get("servicelevel") or {}).get("name"),
+                        "rate_amount": ups_rate.get("amount") or 0.0,
+                    })
+                    ups_rate["_purchase_reference"] = (
+                        f"{self.order_name or self.id}-box-{sequence}-intent-{shipment.id}"
+                    )
+                    shipment_vals = shipping_service.purchase_label(ups_rate)
+                    if shipment_vals and not shipment_vals.get("error"):
+                        selected_rate = ups_rate
+                        _logger.info(
+                            "Order %s Box %d: UPS fallback successful!",
+                            self.id,
+                            sequence,
+                        )
+                else:
+                    _logger.warning(
+                        "Order %s Box %d: No UPS rates available for fallback",
+                        self.id,
+                        sequence,
+                    )
+        if shipment_vals and shipment_vals.get("purchase_uncertain"):
+            shipment.write({
+                "purchase_state": "uncertain",
+                "shippo_transaction_id": shipment_vals.get("shippo_transaction_id"),
+                "tracking_number": shipment_vals.get("tracking_number"),
+                "tracking_url": shipment_vals.get("tracking_url"),
+                "label_url": shipment_vals.get("label_url"),
+                "label_zpl": shipment_vals.get("label_zpl"),
+            })
+            raise ShippingPolicyHold(
+                f"Box {sequence}: fallback label purchase status is uncertain. "
+                "Reconcile with the provider before retrying."
+            )
+        if not shipment_vals:
+            shipment.write({"purchase_state": "error"})
+            raise exceptions.UserError(f"Box {sequence}: Label purchase failed (unknown error)")
+
+        if shipment_vals.get("error"):
+            shipment.write({"purchase_state": "error"})
+            raise exceptions.UserError(f"Box {sequence}: {shipment_vals['error']}")
+
+        shipment.write({
+            "purchase_state": "purchased",
+            "purchase_provider": shipment_vals.get("purchase_provider") or provider_name,
+            "provider_shipment_id": shipment_vals.get("provider_shipment_id"),
+            "provider_rate_id": shipment_vals.get("provider_rate_id") or shipment.provider_rate_id,
+            "provider_service_id": shipment_vals.get("provider_service_id") or shipment.provider_service_id,
+            "provider_response_json": shipment_vals.get("provider_response_json"),
             "shippo_transaction_id": shipment_vals.get("shippo_transaction_id"),
             "carrier": shipment_vals.get("carrier"),
             "service": shipment_vals.get("service"),
@@ -2286,6 +2910,10 @@ class ShopifyOrder(models.Model):
             "label_zpl": shipment_vals.get("label_zpl"),
             "rate_amount": shipment_vals.get("rate_amount"),
             "rate_currency": shipment_vals.get("rate_currency"),
+            "label_format": shipment_vals.get("label_format") or shipment.label_format,
+            "promised_delivery_at": self._provider_datetime(
+                shipment_vals.get("promised_delivery_at")
+            ) or shipment.promised_delivery_at,
             "purchased_at": fields.Datetime.now(),
         })
 
@@ -2299,7 +2927,9 @@ class ShopifyOrder(models.Model):
                 weight_grams=packed_box.total_weight_with_box,
                 rates=rates,
                 selected_rate=selected_rate,
-                is_residential=shippo_meta.get("is_residential") if shippo else None,
+                is_residential=rate_meta.get("is_residential"),
+                rate_meta=rate_meta,
+                selection=selection_details,
             )
         except Exception:
             _logger.exception(
@@ -2342,92 +2972,8 @@ class ShopifyOrder(models.Model):
             return "expedited"
         if re.search(r"\b(priority)\b", normalized_value):
             return "expedited"
-        if re.search(r"\b(ground|standard|economy|saver|surepost|smartpost)\b", normalized_value):
+        if re.search(r"\b(ground|standard|economy|saver|surepost|smartpost|free)\b", normalized_value):
             return "ground"
-        return None
-
-    @staticmethod
-    def _shipping_provider_hint(normalized_value: str) -> Optional[str]:
-        if "ups" in normalized_value:
-            return "UPS"
-        if "usps" in normalized_value or "postal service" in normalized_value:
-            return "USPS"
-        if "fedex" in normalized_value or "federal express" in normalized_value:
-            return "FEDEX"
-        if "dhl" in normalized_value:
-            return "DHL"
-        if "ontrac" in normalized_value:
-            return "ONTRAC"
-        return None
-
-    @classmethod
-    def _is_expedited_request(cls, normalized_value: str, speed_class: Optional[str]) -> bool:
-        if speed_class in {"overnight", "two_day", "three_day", "expedited"}:
-            return True
-        if re.search(r"\b(next|overnight|express|expedited|priority|rush)\b", normalized_value):
-            return True
-        return False
-
-    @staticmethod
-    def _is_speed_compatible(requested_speed: Optional[str], candidate_speed: Optional[str]) -> bool:
-        if not requested_speed or not candidate_speed:
-            return False
-        if requested_speed == "overnight":
-            return candidate_speed == "overnight"
-        if requested_speed == "two_day":
-            return candidate_speed in {"two_day", "overnight"}
-        if requested_speed == "three_day":
-            return candidate_speed in {"three_day", "two_day", "overnight"}
-        if requested_speed == "expedited":
-            return candidate_speed in {"expedited", "three_day", "two_day", "overnight"}
-        if requested_speed == "ground":
-            return candidate_speed == "ground"
-        return requested_speed == candidate_speed
-
-    @staticmethod
-    def _token_overlap_score(left: str, right: str) -> int:
-        left_tokens = {
-            tok for tok in left.split()
-            if tok and tok not in SHIPPING_METHOD_STOP_WORDS
-        }
-        right_tokens = {
-            tok for tok in right.split()
-            if tok and tok not in SHIPPING_METHOD_STOP_WORDS
-        }
-        if not left_tokens or not right_tokens:
-            return 0
-        return len(left_tokens.intersection(right_tokens))
-
-    def _configured_shipping_method_target(self, normalized_request: str) -> Optional[str]:
-        """Look up the requested method in fulfillment.shipping_method_map.
-
-        The parameter is a JSON object mapping Shopify shipping-line titles
-        to Shippo service names, e.g.
-        {"Standard Shipping": "USPS Ground Advantage"}. Both sides are
-        normalized before comparison.
-        """
-        if not normalized_request:
-            return None
-        raw_map = self.env["ir.config_parameter"].sudo().get_param(
-            "fulfillment.shipping_method_map"
-        )
-        if not raw_map:
-            return None
-        try:
-            mapping = json.loads(raw_map)
-        except (TypeError, ValueError):
-            _logger.warning(
-                "fulfillment.shipping_method_map is not valid JSON; ignoring."
-            )
-            return None
-        if not isinstance(mapping, dict):
-            _logger.warning(
-                "fulfillment.shipping_method_map must be a JSON object; ignoring."
-            )
-            return None
-        for key, value in mapping.items():
-            if self._normalize_shipping_text(str(key)) == normalized_request:
-                return self._normalize_shipping_text(str(value)) or None
         return None
 
     def _requested_shipping_context(self) -> dict:
@@ -2448,152 +2994,249 @@ class ShopifyOrder(models.Model):
                     self.id,
                 )
 
-        merged = " ".join(s for s in snippets if s).strip()
+        unique_snippets = []
+        seen = set()
+        for snippet in snippets:
+            normalized_snippet = self._normalize_shipping_text(snippet)
+            if not normalized_snippet or normalized_snippet in seen:
+                continue
+            seen.add(normalized_snippet)
+            unique_snippets.append(snippet.strip())
+
+        merged = " ".join(unique_snippets).strip()
         normalized = self._normalize_shipping_text(merged)
         speed_class = self._shipping_speed_class(normalized)
         return {
             "raw": merged,
             "normalized": normalized,
+            "normalized_options": tuple(seen),
             "speed_class": speed_class,
-            "provider_hint": self._shipping_provider_hint(normalized),
-            "is_expedited": self._is_expedited_request(normalized, speed_class),
         }
 
-    def _select_shipping_rate(self, rates: list) -> dict:
-        """Select the best shipping rate from available options.
+    def _shipping_policy_for_request(self) -> dict:
+        """Resolve a checkout option to structured SLA/token policy.
 
-        Prefers requested_shipping_method if set, otherwise cheapest.
+        Carrier display names never participate.  Optional configuration maps a
+        checkout title/code to stable carrier/service IDs or a maximum transit
+        time.  Amazon orders use their marketplace delivery deadline instead.
         """
-        if not rates:
-            return {}
+        self.ensure_one()
+        context = self._requested_shipping_context()
+        speed_days = {
+            "overnight": 1,
+            "two_day": 2,
+            "three_day": 3,
+            "expedited": 3,
+        }
+        policy = {
+            "allowed_carrier_ids": None,
+            "allowed_service_ids": None,
+            "max_estimated_days": speed_days.get(context.get("speed_class")),
+            "matched_configuration": False,
+            "requires_mapping": bool(
+                self.requested_shipping_method
+                and not context.get("speed_class")
+                and self.source != "amazon"
+            ),
+        }
 
-        def _rate_amount(rate):
-            try:
-                return float(rate.get("amount", 999999))
-            except Exception:
-                return 999999.0
+        raw = self.env["ir.config_parameter"].sudo().get_param(
+            "fulfillment.shipping_service_policy_map"
+        )
+        if not raw:
+            return policy
+        try:
+            mapping = json.loads(raw)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "fulfillment.shipping_service_policy_map is invalid JSON; ignoring"
+            )
+            return policy
+        if not isinstance(mapping, dict):
+            return policy
 
-        # Sort by amount (cheapest first)
-        cheapest = sorted(rates, key=_rate_amount)[0]
-        selected_rate = cheapest
-
-        if self.requested_shipping_method:
-            req_ctx = self._requested_shipping_context()
-            req_norm = req_ctx["normalized"]
-            req_speed = req_ctx["speed_class"]
-            req_provider = req_ctx["provider_hint"]
-
-            enriched_rates = []
-            for rate in rates:
-                service = self._normalize_shipping_text(rate.get("servicelevel", {}).get("name", ""))
-                provider = self._normalize_shipping_text(rate.get("provider", ""))
-                combined = " ".join(v for v in (provider, service) if v).strip()
-                enriched_rates.append(
-                    {
-                        "rate": rate,
-                        "amount": _rate_amount(rate),
-                        "service": service,
-                        "provider": provider,
-                        "combined": combined,
-                        "speed_class": self._shipping_speed_class(combined),
-                    }
-                )
-
-            provider_rates = []
-            if req_provider:
-                provider_rates = [
-                    item for item in enriched_rates
-                    if self._normalize_shipping_text(req_provider) in item["provider"]
-                ]
-
-            candidate_pool = provider_rates or enriched_rates
-
-            # Highest-confidence match first: explicit config mapping
-            # (fulfillment.shipping_method_map), so known shipping options
-            # resolve deterministically without fuzzy matching.
-            mapped_matches = []
-            mapped_target = self._configured_shipping_method_target(req_norm)
-            if mapped_target:
-                mapped_matches = [
-                    item for item in candidate_pool
-                    if item["service"] == mapped_target
-                    or mapped_target in item["combined"]
-                ]
-                if not mapped_matches:
-                    _logger.warning(
-                        "Order %s: Configured mapping '%s' -> '%s' matched no rates; "
-                        "falling back to fuzzy matching.",
-                        self.id,
-                        req_norm,
-                        mapped_target,
-                    )
-
-            # Next: exact normalized match.
-            exact_matches = [
-                item for item in candidate_pool
-                if item["service"] == req_norm or item["combined"] == req_norm
+        configured = None
+        for key, value in mapping.items():
+            if self._normalize_shipping_text(str(key)) in context.get(
+                "normalized_options", ()
+            ):
+                configured = value
+                policy["matched_configuration"] = True
+                policy["requires_mapping"] = False
+                break
+        if isinstance(configured, str):
+            policy["allowed_service_ids"] = [configured]
+        elif isinstance(configured, list):
+            policy["allowed_service_ids"] = [
+                str(value) for value in configured if value
             ]
-            if mapped_matches:
-                selected_rate = sorted(mapped_matches, key=lambda item: item["amount"])[0]["rate"]
-            elif exact_matches:
-                selected_rate = sorted(exact_matches, key=lambda item: item["amount"])[0]["rate"]
-            else:
-                # Next best: phrase containment.
-                contains_matches = [
-                    item for item in candidate_pool
-                    if req_norm and (
-                        req_norm in item["combined"]
-                        or item["combined"] in req_norm
-                    )
-                ]
-                if contains_matches:
-                    selected_rate = sorted(contains_matches, key=lambda item: item["amount"])[0]["rate"]
-                else:
-                    # Then speed-class match (overnight, 2-day, etc).
-                    speed_matches = [
-                        item for item in candidate_pool
-                        if self._is_speed_compatible(req_speed, item["speed_class"])
-                    ]
-                    if speed_matches:
-                        selected_rate = sorted(speed_matches, key=lambda item: item["amount"])[0]["rate"]
-                    else:
-                        # Last attempt: fuzzy token overlap between requested phrase and rate name.
-                        scored = [
-                            (self._token_overlap_score(req_norm, item["combined"]), item)
-                            for item in candidate_pool
-                        ]
-                        scored = [pair for pair in scored if pair[0] >= 2]
-                        if scored:
-                            top_score = max(pair[0] for pair in scored)
-                            top_matches = [pair[1] for pair in scored if pair[0] == top_score]
-                            selected_rate = sorted(top_matches, key=lambda item: item["amount"])[0]["rate"]
-                        elif req_ctx["is_expedited"]:
-                            available = ", ".join(
-                                sorted({
-                                    r.get("servicelevel", {}).get("name") or "Unknown service"
-                                    for r in rates
-                                })
-                            )
-                            raise exceptions.UserError(
-                                "Requested shipping method '%s' could not be matched to an expedited Shippo "
-                                "rate. Available rates: %s. Order held to prevent a slower label purchase."
-                                % (self.requested_shipping_method, available)
-                            )
-                        else:
-                            _logger.warning(
-                                "Order %s: Requested shipping '%s' not found. Using cheapest.",
-                                self.id,
-                                self.requested_shipping_method,
-                            )
+        elif isinstance(configured, dict):
+            services = configured.get("service_ids")
+            carriers = configured.get("carrier_ids")
+            if isinstance(services, list):
+                policy["allowed_service_ids"] = [str(value) for value in services if value]
+            if isinstance(carriers, list):
+                policy["allowed_carrier_ids"] = [str(value) for value in carriers if value]
+            if configured.get("max_estimated_days") is not None:
+                policy["max_estimated_days"] = configured.get("max_estimated_days")
+        return policy
 
-            if selected_rate:
-                _logger.info(
-                    "Order %s: Selected rate for '%s': %s (%s) - $%s",
-                    self.id,
-                    self.requested_shipping_method,
-                    selected_rate.get("servicelevel", {}).get("name"),
-                    selected_rate.get("provider"),
-                    selected_rate.get("amount"),
+    def _select_shipping_rate(
+        self, rates: list, *, return_details=False, audit_context=None
+    ):
+        """Select by stable IDs, delivery promise, and effective cost.
+
+        The method deliberately ignores carrier/service display names.  A
+        rejected or anomalously expensive candidate holds the order instead of
+        silently buying postage.
+        """
+        self.ensure_one()
+        if not rates:
+            raise exceptions.UserError("No shipping rates were returned.")
+
+        from odoo.addons.shopify_fulfillment.services.rate_policy import (
+            normalize_amazon_rate,
+            normalize_shippo_rate,
+            select_best_rate,
+        )
+
+        normalized = []
+        rate_by_id = {}
+        amazon_allowed_rate_ids = []
+        for rate in rates:
+            rate_id = rate.get("object_id") or rate.get("id")
+            if rate_id:
+                rate_by_id[str(rate_id)] = rate
+            if rate.get("_source") == "amazon_shipping":
+                amazon_meta = rate.get("_amazon") or {}
+                normalized.append(
+                    normalize_amazon_rate(amazon_meta.get("raw_rate") or {})
                 )
+                if (
+                    rate_id
+                    and amazon_meta.get("document_spec")
+                    and not amazon_meta.get("requires_additional_inputs")
+                    and not amazon_meta.get("unresolved_required_vas_groups")
+                ):
+                    amazon_allowed_rate_ids.append(str(rate_id))
+            else:
+                normalized.append(normalize_shippo_rate(rate))
 
-        return selected_rate
+        request_policy = self._shipping_policy_for_request()
+        if request_policy.get("requires_mapping"):
+            request_policy["allowed_service_ids"] = []
+        is_amazon_rates = any(
+            rate.get("_source") == "amazon_shipping" for rate in rates
+        )
+        latest_delivery = self.amazon_latest_delivery_at if self.source == "amazon" else None
+        if self.source == "amazon" and not latest_delivery:
+            raise exceptions.UserError(
+                "Amazon delivery deadline is missing. Order held before buying a Shippo label."
+            )
+
+        params = self.env["ir.config_parameter"].sudo()
+        max_premium = params.get_param(
+            "fulfillment.max_rate_premium_absolute", "25.00"
+        )
+        max_premium_percent = params.get_param(
+            "fulfillment.max_rate_premium_percent", "50"
+        )
+        if request_policy.get("max_estimated_days") and not latest_delivery:
+            # Ground rates are not a valid anomaly baseline for an explicitly
+            # expedited checkout option.
+            max_premium = None
+            max_premium_percent = None
+        selection = select_best_rate(
+            normalized,
+            currency=self.order_currency or "USD",
+            allowed_rate_ids=amazon_allowed_rate_ids if is_amazon_rates else None,
+            allowed_carrier_ids=request_policy.get("allowed_carrier_ids"),
+            allowed_service_ids=request_policy.get("allowed_service_ids"),
+            latest_delivery=latest_delivery,
+            ship_at=fields.Datetime.now(),
+            max_estimated_days=(
+                None if latest_delivery else request_policy.get("max_estimated_days")
+            ),
+            max_over_cheapest=max_premium,
+            max_over_cheapest_percent=max_premium_percent,
+        )
+
+        rejection_summary = json.dumps(
+            [
+                {
+                    "rate_id": rejection.rate_id,
+                    "service_id": rejection.service_id,
+                    "carrier_id": rejection.carrier_id,
+                    "reasons": list(rejection.reasons),
+                }
+                for rejection in selection.rejections
+            ],
+            sort_keys=True,
+        )
+        details = {
+            "policy_version": "structured-rate-policy-v1",
+            "reason": selection.reason,
+            "cheapest_eligible_amount": (
+                str(selection.candidate.amount)
+                if selection.candidate and selection.candidate.amount is not None
+                else "0"
+            ),
+            "over_cheapest": (
+                str(selection.over_cheapest)
+                if selection.over_cheapest is not None
+                else "0"
+            ),
+            "rejection_summary": rejection_summary,
+        }
+
+        if not selection.approved:
+            candidate = selection.candidate
+            candidate_text = ""
+            if candidate and candidate.amount is not None:
+                candidate_text = f" Candidate was {candidate.amount} {candidate.currency}."
+            if audit_context:
+                candidate_rate = (
+                    rate_by_id.get(str(candidate.rate_id)) if candidate else {}
+                )
+                try:
+                    self.env["fulfillment.rate.audit"].sudo().log_purchase(
+                        order=self,
+                        shipment=False,
+                        group=audit_context.get("group"),
+                        sequence=audit_context.get("sequence") or 0,
+                        weight_grams=audit_context.get("weight_grams") or 0.0,
+                        rates=rates,
+                        selected_rate=candidate_rate or {},
+                        is_residential=audit_context.get("is_residential"),
+                        rate_meta=audit_context.get("rate_meta") or {},
+                        selection=details,
+                        decision="held",
+                    )
+                except Exception:
+                    _logger.exception(
+                        "Order %s: Failed to record held shipping decision",
+                        self.id,
+                    )
+            raise ShippingPolicyHold(
+                "Shipping policy held this order before label purchase: "
+                f"{selection.reason}.{candidate_text} Review the rate audit and order promise."
+            )
+
+        selected_rate = rate_by_id.get(str(selection.selected.rate_id))
+        if not selected_rate:
+            raise exceptions.UserError(
+                "Shipping policy selected a rate that is no longer available. Re-rate the order."
+            )
+
+        _logger.info(
+            "Order %s: Structured policy selected rate_id=%s service_id=%s "
+            "carrier_id=%s amount=%s %s reason=%s",
+            self.id,
+            selection.selected.rate_id,
+            selection.selected.service_id,
+            selection.selected.carrier_id,
+            selection.selected.amount,
+            selection.selected.currency,
+            selection.reason,
+        )
+        return (selected_rate, details) if return_details else selected_rate

@@ -33,10 +33,30 @@ class TestResetReprocessRefresh(TransactionCase):
             "email": "updated@example.com",
             "customer": {"first_name": "Updated", "last_name": "Customer"},
             "shipping_address": shipping_address,
-            "shipping_lines": [{"title": "Amazon Standard"}],
+            "shipping_lines": [{"title": "Amazon Standard", "price": "44.80"}],
             "line_items": [],
             "source_name": "amazon-us",
-            "tags": "Amazon-US",
+            "tags": "",
+            "currency": "USD",
+            "note_attributes": [
+                {"name": "Amazon Order Id", "value": "112-0000000-0000000"},
+                {
+                    "name": "Amazon Earliest Ship Date",
+                    "value": "2026-08-17T07:00:00.000Z",
+                },
+                {
+                    "name": "Amazon Latest Ship Date",
+                    "value": "2026-08-18T06:59:59.000Z",
+                },
+                {
+                    "name": "Amazon Earliest Delivery Date",
+                    "value": "2026-08-24T07:00:00.000Z",
+                },
+                {
+                    "name": "Amazon Latest Delivery Date",
+                    "value": "2026-08-25T06:59:59.000Z",
+                },
+            ],
         }
 
     def test_reset_refreshes_shopify_address_before_reprocessing(self):
@@ -80,6 +100,13 @@ class TestResetReprocessRefresh(TransactionCase):
         self.assertEqual(self.order.shipping_zip, "45242")
         self.assertEqual(self.order.shipping_country, "US")
         self.assertEqual(self.order.requested_shipping_method, "Amazon Standard")
+        self.assertEqual(self.order.source, "amazon")
+        self.assertEqual(self.order.amazon_order_id, "112-0000000-0000000")
+        self.assertEqual(self.order.shipping_amount_paid, 44.80)
+        self.assertEqual(self.order.order_currency, "USD")
+        self.assertEqual(
+            str(self.order.amazon_latest_delivery_at), "2026-08-25 06:59:59"
+        )
         self.assertEqual(
             json.loads(self.order.raw_payload)["id"], int(self.order.shopify_id)
         )

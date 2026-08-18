@@ -10,22 +10,21 @@
     </record>
     -->
 
-    <!-- Shipping services to exclude from rate selection: comma-separated,
-         case-insensitive substrings matched against the Shippo service name. -->
+    <!-- Stable provider service/carrier IDs to exclude from rate selection. -->
     <!--
-    <record id="fulfillment_excluded_services" model="ir.config_parameter">
-        <field name="key">fulfillment.excluded_services</field>
-        <field name="value">ground saver</field>
+    <record id="fulfillment_excluded_service_ids" model="ir.config_parameter">
+        <field name="key">fulfillment.excluded_service_ids</field>
+        <field name="value">ups_ground_saver,UPS_PTP_GROUNDSAVER</field>
     </record>
     -->
 
-    <!-- Explicit Shopify shipping-line -> Shippo service mapping (JSON).
-         Checked before fuzzy matching, so known checkout options resolve
-         deterministically. -->
+    <!-- Optional checkout option -> structured policy mapping. Values use
+         stable carrier/service IDs and/or max_estimated_days; display names
+         are never used for carrier selection. -->
     <!--
-    <record id="fulfillment_shipping_method_map" model="ir.config_parameter">
-        <field name="key">fulfillment.shipping_method_map</field>
-        <field name="value">{"Standard Shipping": "USPS Ground Advantage", "Express": "UPS 2nd Day Air"}</field>
+    <record id="fulfillment_shipping_service_policy_map" model="ir.config_parameter">
+        <field name="key">fulfillment.shipping_service_policy_map</field>
+        <field name="value">{"Express": {"max_estimated_days": 2}}</field>
     </record>
     -->
 
@@ -36,5 +35,27 @@
         <field name="key">fulfillment.allow_mock_api</field>
         <field name="value">False</field>
     </record>
+    -->
+
+    <!-- Amazon Buy Shipping is intentionally safe-off until a private SP-API
+         app has the Direct-to-Consumer Shipping role and a read-only rate test
+         succeeds. Secrets are injected via process environment or admin-only
+         ir.config_parameter records; they are never exposed in the general
+         fulfillment configuration wizard.
+
+         amazon_shipping.enabled = False
+         amazon_shipping.lwa_client_id
+         amazon_shipping.lwa_client_secret
+         amazon_shipping.refresh_token
+         amazon_shipping.endpoint = https://sellingpartnerapi-na.amazon.com
+         amazon_shipping.business_id = AmazonShipping_US
+         amazon_shipping.marketplace_id = ATVPDKIKX0DER
+         amazon_shipping.required_vas_preferences = {}
+
+         Structured-rate guardrails:
+         fulfillment.max_rate_premium_absolute = 25.00
+         fulfillment.max_rate_premium_percent = 50
+         fulfillment.shipping_service_policy_map = JSON mapping checkout titles
+             to stable service_ids/carrier_ids/max_estimated_days.
     -->
 </odoo>

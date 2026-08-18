@@ -15,6 +15,12 @@
                 <field name="weight_grams"/>
                 <field name="selected_carrier"/>
                 <field name="selected_service"/>
+                <field name="selected_service_token"/>
+                <field name="rate_source"/>
+                <field name="decision" widget="badge"/>
+                <field name="selected_service_token" optional="hide"/>
+                <field name="selected_promised_delivery_at" optional="hide"/>
+                <field name="delivery_deadline_at" optional="hide"/>
                 <field name="selected_amount" sum="Total Paid"/>
                 <field name="rate_1_carrier" string="#1"/>
                 <field name="rate_1_amount" string="#1 $"/>
@@ -40,6 +46,7 @@
                 <filter string="Residential" name="filter_residential" domain="[('is_residential', '=', 'yes')]"/>
                 <filter string="Commercial" name="filter_commercial" domain="[('is_residential', '=', 'no')]"/>
                 <filter string="Overpaid vs Cheapest" name="filter_overpaid" domain="[('delta_vs_cheapest', '>', 0.0)]"/>
+                <filter string="Held for Review" name="filter_held" domain="[('decision', '=', 'held')]"/>
                 <filter string="Last 7 Days" name="filter_last_week"
                         domain="[('purchased_at', '>=', (context_today() - datetime.timedelta(days=7)).strftime('%Y-%m-%d'))]"/>
                 <filter string="Last 30 Days" name="filter_last_month"
@@ -47,6 +54,8 @@
                 <group expand="0" string="Group By">
                     <filter string="Carrier" name="group_carrier" context="{'group_by': 'selected_carrier'}"/>
                     <filter string="Service" name="group_service" context="{'group_by': 'selected_service'}"/>
+                    <filter string="Rate Source" name="group_rate_source" context="{'group_by': 'rate_source'}"/>
+                    <filter string="Decision" name="group_decision" context="{'group_by': 'decision'}"/>
                     <filter string="Address Type" name="group_residential" context="{'group_by': 'is_residential'}"/>
                     <filter string="Destination State" name="group_state" context="{'group_by': 'dest_state'}"/>
                 </group>
@@ -77,14 +86,28 @@
                     </group>
                     <group string="Selected Rate">
                         <group>
+                            <field name="rate_source"/>
+                            <field name="decision"/>
                             <field name="selected_carrier"/>
                             <field name="selected_service"/>
+                            <field name="selected_rate_id"/>
+                            <field name="selected_service_token"/>
                         </group>
                         <group>
                             <field name="selected_amount"/>
                             <field name="selected_currency"/>
+                            <field name="cheapest_eligible_amount"/>
                             <field name="delta_vs_cheapest"/>
+                            <field name="selected_estimated_days"/>
+                            <field name="selected_promised_delivery_at"/>
+                            <field name="delivery_deadline_at"/>
                         </group>
+                    </group>
+                    <group string="Selection Policy">
+                        <field name="policy_version"/>
+                        <field name="selection_reason"/>
+                        <field name="rejection_summary"/>
+                        <field name="candidate_summary_json"/>
                     </group>
                     <group string="Top 3 Cheapest Rates Available">
                         <group>
