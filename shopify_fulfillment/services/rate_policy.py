@@ -272,6 +272,45 @@ def normalize_amazon_rates(response_or_rates: Any) -> Tuple[NormalizedRate, ...]
     return tuple(normalize_amazon_rate(rate) for rate in values)
 
 
+def classify_checkout_shipping_speed(normalized_value: str) -> Optional[str]:
+    """Classify a normalized Shopify checkout title into an SLA class.
+
+    This classification is only used to translate the buyer's checkout choice
+    into a delivery constraint. Carrier selection still uses structured Shippo
+    or Amazon identifiers and prices, never display-name matching.
+    """
+
+    if not normalized_value:
+        return None
+
+    if re.search(
+        r"\b(priority mail express|overnight|next day|nextday|1 business day|"
+        r"one business day|1 day|one day|priority overnight|first overnight)\b",
+        normalized_value,
+    ):
+        return "overnight"
+    if re.search(
+        r"\b(2 business days?|two business days?|2 day|two day|2nd day|"
+        r"second day|48 hour)\b",
+        normalized_value,
+    ):
+        return "two_day"
+    if re.search(
+        r"\b(3 business days?|three business days?|3 day|three day|3rd day|"
+        r"third day|72 hour)\b",
+        normalized_value,
+    ):
+        return "three_day"
+    if re.search(r"\b(express|expedited|rush|priority mail|priority)\b", normalized_value):
+        return "expedited"
+    if re.search(
+        r"\b(ground|standard|economy|saver|surepost|smartpost|free)\b",
+        normalized_value,
+    ):
+        return "ground"
+    return None
+
+
 def select_best_rate(
     rates: Iterable[NormalizedRate],
     *,
@@ -691,6 +730,7 @@ __all__ = [
     "NormalizedRate",
     "RateRejection",
     "RateSelection",
+    "classify_checkout_shipping_speed",
     "normalize_amazon_rate",
     "normalize_amazon_rates",
     "normalize_shippo_rate",

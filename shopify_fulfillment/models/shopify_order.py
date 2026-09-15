@@ -2959,22 +2959,11 @@ class ShopifyOrder(models.Model):
 
     @classmethod
     def _shipping_speed_class(cls, normalized_value: str) -> Optional[str]:
-        if not normalized_value:
-            return None
+        from odoo.addons.shopify_fulfillment.services.rate_policy import (
+            classify_checkout_shipping_speed,
+        )
 
-        if re.search(r"\b(overnight|next day|nextday|1 day|one day|priority overnight|first overnight)\b", normalized_value):
-            return "overnight"
-        if re.search(r"\b(2 day|two day|2nd day|second day|48 hour)\b", normalized_value):
-            return "two_day"
-        if re.search(r"\b(3 day|three day|3rd day|third day|72 hour)\b", normalized_value):
-            return "three_day"
-        if re.search(r"\b(express|expedited|rush)\b", normalized_value):
-            return "expedited"
-        if re.search(r"\b(priority)\b", normalized_value):
-            return "expedited"
-        if re.search(r"\b(ground|standard|economy|saver|surepost|smartpost|free)\b", normalized_value):
-            return "ground"
-        return None
+        return classify_checkout_shipping_speed(normalized_value)
 
     def _requested_shipping_context(self) -> dict:
         snippets = [self.requested_shipping_method or ""]
@@ -3032,6 +3021,10 @@ class ShopifyOrder(models.Model):
             "allowed_carrier_ids": None,
             "allowed_service_ids": None,
             "max_estimated_days": speed_days.get(context.get("speed_class")),
+            "free_standard": bool(
+                context.get("speed_class") == "ground"
+                and re.search(r"\bfree\b", context.get("normalized") or "")
+            ),
             "matched_configuration": False,
             "requires_mapping": bool(
                 self.requested_shipping_method
@@ -3079,6 +3072,15 @@ class ShopifyOrder(models.Model):
                 policy["allowed_carrier_ids"] = [str(value) for value in carriers if value]
             if configured.get("max_estimated_days") is not None:
                 policy["max_estimated_days"] = configured.get("max_estimated_days")
+
+        # A free-standard checkout choice is a cost promise, not a carrier or
+        # premium-speed promise. Always buy the absolute cheapest structurally
+        # valid Shippo rate, even if an old mapping remains configured.
+        if policy["free_standard"]:
+            policy["allowed_carrier_ids"] = None
+            policy["allowed_service_ids"] = None
+            policy["max_estimated_days"] = None
+            policy["requires_mapping"] = False
         return policy
 
     def _select_shipping_rate(
@@ -3174,7 +3176,7 @@ class ShopifyOrder(models.Model):
             sort_keys=True,
         )
         details = {
-            "policy_version": "structured-rate-policy-v1",
+            "policy_version": "structured-rate-policy-v2-free-standard",
             "reason": selection.reason,
             "cheapest_eligible_amount": (
                 str(selection.candidate.amount)

@@ -16,6 +16,22 @@ spec.loader.exec_module(rate_policy)
 
 
 class RateNormalizationTest(unittest.TestCase):
+    def test_checkout_shipping_speed_classification(self):
+        cases = {
+            "free standard shipping": "ground",
+            "usps ground advantage": "ground",
+            "usps priority mail": "expedited",
+            "usps priority mail express": "overnight",
+            "ups 2 business days": "two_day",
+            "fedex 3 business days": "three_day",
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                self.assertEqual(
+                    rate_policy.classify_checkout_shipping_speed(title),
+                    expected,
+                )
+
     def test_shippo_uses_structured_token_and_safe_numeric_fields(self):
         normalized = rate_policy.normalize_shippo_rate({
             "object_id": "shippo-rate-1",

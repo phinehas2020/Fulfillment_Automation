@@ -1,7 +1,7 @@
 {
     "name": "Shopify Fulfillment Automation",
     "summary": "Promise-aware Shopify, Shippo, and Amazon Buy Shipping fulfillment",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "license": "LGPL-3",
     "author": "Your Company",
     "website": "",
