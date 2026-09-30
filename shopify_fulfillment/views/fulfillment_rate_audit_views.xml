@@ -109,6 +109,11 @@
                         <field name="rejection_summary"/>
                         <field name="candidate_summary_json"/>
                     </group>
+                    <group string="Shippo Destination Validation" invisible="rate_source != 'shippo'">
+                        <field name="submitted_address_json" readonly="1"/>
+                        <field name="validated_address_json" readonly="1"/>
+                        <field name="address_validation_json" readonly="1"/>
+                    </group>
                     <group string="Top 3 Cheapest Rates Available">
                         <group>
                             <field name="rate_1_carrier"/>

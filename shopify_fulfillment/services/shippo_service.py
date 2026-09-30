@@ -5,6 +5,7 @@ import requests
 import json
 from odoo import exceptions
 from .address_utils import normalize_address_lines
+from .address_review import address_snapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -301,6 +302,7 @@ class ShippoService:
             rates = data.get("rates", [])
             messages = data.get("messages", [])
             meta = self._extract_address_meta(data.get("address_to"))
+            meta["submitted_address"] = address_snapshot(address_to)
 
             _logger.info(
                 "Shippo: Got %d rates for box %s (is_residential=%s)",
@@ -332,6 +334,7 @@ class ShippoService:
         return {
             "is_residential": address_obj.get("is_residential"),
             "validation_results": address_obj.get("validation_results"),
+            "validated_address": address_snapshot(address_obj),
         }
 
     def get_recent_transactions(self, limit: int = 20):

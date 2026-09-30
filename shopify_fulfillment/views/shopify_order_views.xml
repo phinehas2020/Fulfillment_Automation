@@ -40,6 +40,22 @@
                     <div class="alert alert-danger" role="alert" invisible="not error_message">
                         <field name="error_message"/>
                     </div>
+                    <div class="alert alert-warning" role="alert" invisible="not address_review_required">
+                        Shippo changed the delivery destination. Compare both addresses before approving a label purchase.
+                    </div>
+                    <group string="Shippo Address Review" invisible="not address_review_required">
+                        <field name="address_review_required" invisible="1"/>
+                        <field name="address_review_reason" readonly="1"/>
+                        <field name="address_review_submitted" readonly="1"/>
+                        <field name="address_review_validated" readonly="1"/>
+                        <field name="address_review_fingerprint" invisible="1"/>
+                        <button name="action_approve_address_correction" type="object"
+                                string="Approve Corrected Address" class="btn-warning"
+                                confirm="Approve the validated destination shown here for this order? Processing again may purchase a label for it."/>
+                    </group>
+                    <field name="address_review_approved_fingerprint" invisible="1"/>
+                    <field name="address_review_approved_by" invisible="1"/>
+                    <field name="address_review_approved_at" invisible="1"/>
                     <group>
                         <field name="order_name"/>
                         <field name="order_number"/>

@@ -26,6 +26,7 @@ services.__path__ = [str(SERVICES_ROOT)]
 
 for module_name, filename in (
     ("shopify_fulfillment.services.address_utils", "address_utils.py"),
+    ("shopify_fulfillment.services.address_review", "address_review.py"),
     ("shopify_fulfillment.services.shippo_service", "shippo_service.py"),
 ):
     spec = importlib.util.spec_from_file_location(module_name, SERVICES_ROOT / filename)
@@ -59,6 +60,36 @@ class ShippoPurchaseSafetyTest(unittest.TestCase):
             "currency": "USD",
             "_purchase_reference": "#43359-box-1-intent-99",
         }
+
+    @patch.object(shippo_service.ShippoService, "_post_rate_request")
+    def test_rate_response_preserves_submitted_and_validated_destinations(self, post):
+        post.return_value = _Response(200, payload={
+            "address_to": {
+                "street1": "2 Richard St", "city": "Cove", "state": "TX",
+                "zip": "77520-3962", "country": "US",
+                "validation_results": {"is_valid": True, "messages": [{"type": "address_correction"}]},
+            },
+            "rates": [self.rate],
+        })
+        order = types.SimpleNamespace(
+            id=8634, customer_name="H Boyer", shipping_address_line1="2 Richard Pearse Cove",
+            shipping_address_line2="", shipping_city="Georgetown", shipping_state="TX",
+            shipping_zip="78626", shipping_country="US", shipping_phone="", email="",
+        )
+        sender = types.SimpleNamespace(
+            name="Sender", street="1 Main St", street2="", city="Austin", zip="78701",
+            state_id=types.SimpleNamespace(code="TX"),
+            country_id=types.SimpleNamespace(code="US"), phone="", email="",
+        )
+        box = types.SimpleNamespace(name="Box 1", length=10, width=8, height=4)
+
+        rates, meta = self.service.get_rates_for_box(order, box, 100, sender)
+
+        self.assertEqual(rates, [self.rate])
+        self.assertEqual(meta["submitted_address"]["street1"], "2 Richard Pearse Cove")
+        self.assertEqual(meta["submitted_address"]["zip"], "78626")
+        self.assertEqual(meta["validated_address"]["street1"], "2 Richard St")
+        self.assertEqual(meta["validated_address"]["zip"], "77520-3962")
 
     @patch.object(shippo_service.requests, "post")
     def test_timeout_returns_uncertain_and_does_not_retry(self, post):

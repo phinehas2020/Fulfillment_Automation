@@ -57,6 +57,9 @@ class FulfillmentRateAudit(models.Model):
     selection_reason = fields.Char(string="Selection Reason")
     rejection_summary = fields.Text(string="Rejected Offers")
     candidate_summary_json = fields.Text(string="Candidate Summary JSON")
+    submitted_address_json = fields.Text(string="Submitted Destination", readonly=True)
+    validated_address_json = fields.Text(string="Validated Destination", readonly=True)
+    address_validation_json = fields.Text(string="Address Validation", readonly=True)
 
     rate_1_carrier = fields.Char(string="#1 Carrier")
     rate_1_service = fields.Char(string="#1 Service")
@@ -191,6 +194,9 @@ class FulfillmentRateAudit(models.Model):
             "selection_reason": selection.get("reason") or "",
             "rejection_summary": selection.get("rejection_summary") or "",
             "candidate_summary_json": json.dumps(candidate_summary, sort_keys=True),
+            "submitted_address_json": json.dumps(rate_meta.get("submitted_address") or {}, sort_keys=True),
+            "validated_address_json": json.dumps(rate_meta.get("validated_address") or {}, sort_keys=True),
+            "address_validation_json": json.dumps(rate_meta.get("validation_results") or {}, sort_keys=True),
             "rate_1_carrier": _carrier(top3[0]) if len(top3) > 0 else "",
             "rate_1_service": _service(top3[0]) if len(top3) > 0 else "",
             "rate_1_amount": _amount(top3[0]) if len(top3) > 0 else 0.0,

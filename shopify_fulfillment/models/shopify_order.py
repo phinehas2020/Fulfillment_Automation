@@ -8,6 +8,11 @@ from typing import Optional
 
 from odoo import api, exceptions, fields, models
 from ..services.address_utils import normalize_address_lines
+from ..services.address_review import (
+    address_review_fingerprint,
+    display_address,
+    material_address_changes,
+)
 from ..services.pickup_utils import (
     fulfillment_orders_confirm_pickup,
     payload_has_ambiguous_physical_fulfillment,
@@ -61,6 +66,14 @@ class ShopifyOrder(models.Model):
         default="pending",
     )
     error_message = fields.Text()
+    address_review_required = fields.Boolean(string="Address Correction Review Required", readonly=True)
+    address_review_submitted = fields.Text(string="Submitted to Shippo", readonly=True)
+    address_review_validated = fields.Text(string="Validated by Shippo", readonly=True)
+    address_review_reason = fields.Char(string="Address Differences", readonly=True)
+    address_review_fingerprint = fields.Char(readonly=True, copy=False)
+    address_review_approved_fingerprint = fields.Char(readonly=True, copy=False)
+    address_review_approved_by = fields.Many2one("res.users", readonly=True, copy=False)
+    address_review_approved_at = fields.Datetime(readonly=True, copy=False)
     auto_process_queued = fields.Boolean(
         default=False,
         help="Set when the order arrives with auto-processing enabled; the "
@@ -1609,6 +1622,67 @@ class ShopifyOrder(models.Model):
         for order in self:
             order.process_order()
 
+    def action_approve_address_correction(self):
+        """Approve only the exact submitted/validated pair shown on this order."""
+        if not self.env.user.has_group("base.group_user"):
+            raise exceptions.AccessError("An internal user must review the address correction.")
+        for order in self:
+            if not order.address_review_required or not order.address_review_fingerprint:
+                raise exceptions.UserError("There is no pending address correction to approve.")
+            if order.address_review_reason in (
+                "validated destination unavailable", "destination failed validation"
+            ):
+                raise exceptions.UserError(
+                    "Shippo did not validate a usable destination. Correct the source address and reprocess."
+                )
+            order.write({
+                "address_review_approved_fingerprint": order.address_review_fingerprint,
+                "address_review_approved_by": self.env.user.id,
+                "address_review_approved_at": fields.Datetime.now(),
+                "address_review_required": False,
+            })
+
+    def _hold_for_shippo_address_correction(self, rate_meta, group, sequence, weight_grams, rates):
+        """Stop before any Shippo transaction when its destination changed."""
+        self.ensure_one()
+        submitted = rate_meta.get("submitted_address")
+        validated = rate_meta.get("validated_address")
+        changes = material_address_changes(
+            submitted, validated, rate_meta.get("validation_results")
+        )
+        if not changes:
+            return
+        fingerprint = address_review_fingerprint(submitted, validated)
+        if self.address_review_approved_fingerprint == fingerprint:
+            return
+        submitted_text = display_address(submitted)
+        validated_text = display_address(validated) or "Shippo did not return a validated address"
+        self.write({
+            "address_review_required": True,
+            "address_review_submitted": submitted_text,
+            "address_review_validated": validated_text,
+            "address_review_reason": ", ".join(changes),
+            "address_review_fingerprint": fingerprint,
+        })
+        self.env["fulfillment.rate.audit"].sudo().log_purchase(
+            order=self,
+            shipment=False,
+            group=group,
+            sequence=sequence,
+            weight_grams=weight_grams,
+            rates=rates,
+            selected_rate={},
+            is_residential=rate_meta.get("is_residential"),
+            rate_meta=rate_meta,
+            selection={"reason": "address_correction: " + ", ".join(changes)},
+            decision="held",
+        )
+        raise ShippingPolicyHold(
+            "Shippo changed the destination (" + ", ".join(changes) + "). "
+            "Review the submitted and validated addresses, then explicitly approve "
+            "the correction before processing again."
+        )
+
     @api.model
     def trigger_queued_processing_cron(self):
         """Ask the processing cron to run right after this transaction commits."""
@@ -2299,6 +2373,9 @@ class ShopifyOrder(models.Model):
                 )
                 if shipment:
                     shipments_created.append(shipment)
+            except ShippingPolicyHold:
+                group.write({"state": "error"})
+                raise
             except Exception as e:
                 _logger.exception("Failed to process box %d for order %s", sequence, self.id)
                 group.write({"state": "error"})
@@ -2658,6 +2735,11 @@ class ShopifyOrder(models.Model):
                     sender_company=self.env.company,
                 )
                 rate_meta["provider"] = "shippo"
+
+            if provider_name == "shippo":
+                self._hold_for_shippo_address_correction(
+                    rate_meta, group, sequence, packed_box.total_weight_with_box, rates
+                )
 
             # Exclusions use stable service/carrier IDs, never display names.
             config_params = self.env["ir.config_parameter"].sudo()
