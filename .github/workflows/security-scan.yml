@@ -68,6 +68,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install --requirement print_agent/requirements.txt
       - name: Run standalone test suites
         run: |
           python shopify_fulfillment/tests/test_rate_policy.py
