@@ -1,0 +1,76 @@
+name: Security Scan
+
+# Runs on every push and pull request, so application code is scanned for
+# vulnerabilities before any change is released to the production Odoo host.
+# See docs/change-management.md step 3.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # Weekly baseline scan so newly disclosed CVEs surface without a code change.
+    - cron: "0 13 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for committed credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  static-analysis:
+    name: Python static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install scanners
+        run: pip install bandit
+      - name: Bandit
+        # Fails the build on medium-or-higher confidence findings of medium-or-
+        # higher severity. Odoo addon and print agent only.
+        run: |
+          bandit -r shopify_fulfillment print_agent \
+            --severity-level medium \
+            --confidence-level medium \
+            --exclude '*/tests/*,*/__pycache__/*'
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit print agent dependencies
+        run: pip-audit --requirement print_agent/requirements.txt --strict
+
+  tests:
+    name: Addon tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run standalone test suites
+        run: |
+          python shopify_fulfillment/tests/test_rate_policy.py
+          python shopify_fulfillment/tests/test_amazon_shipping_service.py
+          python shopify_fulfillment/tests/test_shippo_purchase_safety.py
+          python tests/test_packing_utils.py
