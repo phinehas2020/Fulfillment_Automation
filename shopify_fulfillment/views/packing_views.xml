@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_packing_shipment_list" model="ir.ui.view">
+        <field name="name">fulfillment.shipment.packing.list</field><field name="model">fulfillment.shipment</field>
+        <field name="arch" type="xml"><list create="0" delete="0">
+            <field name="order_id"/><field name="sequence"/><field name="tracking_number"/><field name="carrier"/>
+            <field name="packing_state"/><field name="packing_sync_state"/><field name="packing_completed_by"/><field name="packing_completed_at"/>
+            <button name="action_packing_open" string="Pick / Scan to Finish" type="object" invisible="packing_state in ('packed', 'void')"/>
+            <button name="action_packing_retry_sync" string="Reconcile Shopify" type="object" groups="shopify_fulfillment.group_packing_supervisor" invisible="packing_sync_state != 'review'"/>
+        </list></field>
+    </record>
+    <record id="action_packing_boxes" model="ir.actions.act_window">
+        <field name="name">Packing Boxes</field><field name="res_model">fulfillment.shipment</field><field name="view_mode">list</field>
+        <field name="view_id" ref="view_packing_shipment_list"/><field name="domain">[('order_id.completion_policy_version', '=', 'packing_v1')]</field>
+    </record>
+    <menuitem id="menu_packing_boxes" name="Packing Boxes" parent="menu_shopify_root" action="action_packing_boxes" sequence="11" groups="shopify_fulfillment.group_packing_employee"/>
+    <record id="view_packing_wizard" model="ir.ui.view">
+        <field name="name">fulfillment.packing.wizard.form</field><field name="model">fulfillment.packing.wizard</field>
+        <field name="arch" type="xml"><form string="Pick This Box">
+            <group><field name="shipment_id"/><field name="order_name"/><field name="box_number"/><field name="expected_version" invisible="1"/></group>
+            <field name="line_ids"><list editable="bottom" create="0" delete="0"><field name="order_line_id" invisible="1"/><field name="title"/><field name="sku"/><field name="required_quantity"/><field name="confirmed_quantity"/><field name="previous_quantity" invisible="1"/></list></field>
+            <group><field name="finish_barcode" placeholder="Scan or enter the label attached to this box"/><field name="review_reason" invisible="not review_reason"/></group>
+            <footer><button name="action_finish" string="Confirm This Label and Finish" type="object" class="btn-primary"/><button name="action_save" string="Save Picking Progress" type="object"/><button string="Cancel" special="cancel"/></footer>
+        </form></field>
+    </record>
+    <record id="view_packing_order_form" model="ir.ui.view">
+        <field name="name">shopify.order.packing.form</field><field name="model">shopify.order</field>
+        <field name="inherit_id" ref="shopify_fulfillment.view_shopify_order_form"/>
+        <field name="arch" type="xml"><xpath expr="//notebook" position="inside"><page string="Packing">
+            <group><field name="company_id"/><field name="packing_warehouse_id"/><field name="completion_policy_version"/><field name="packing_owner_id"/><field name="packing_operational_state"/><field name="packing_completed_at"/><field name="packing_review_reason"/><field name="packing_reconciliation_note"/><field name="packing_skip_shopify"/></group>
+            <button name="action_packing_retry_finalization" string="Review and Retry Delivery / Accounting" type="object" groups="shopify_fulfillment.group_packing_supervisor" invisible="packing_operational_state != 'review'"/>
+        </page></xpath></field>
+    </record>
+    <record id="view_packing_user_scope" model="ir.ui.view">
+        <field name="name">res.users.packing.scope</field><field name="model">res.users</field><field name="inherit_id" ref="base.view_users_form"/>
+        <field name="arch" type="xml"><xpath expr="//notebook" position="inside"><page string="Packing Access" groups="base.group_system"><field name="packing_warehouse_ids" widget="many2many_tags"/></page></xpath></field>
+    </record>
+</odoo>

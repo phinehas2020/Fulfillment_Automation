@@ -10,3 +10,7 @@ access_shopify_config_wizard_user,access.shopify.config.wizard.admin,model_shopi
 access_shippo_recent_transaction_user,access.shippo.recent.transaction,model_shippo_recent_transaction,base.group_user,1,1,1,1
 access_fulfillment_rate_audit_user,access.fulfillment.rate.audit,model_fulfillment_rate_audit,base.group_user,1,1,1,1
 access_shopify_restock_item_user,access.fulfillment.restock.item,model_fulfillment_restock_item,base.group_user,1,1,1,1
+access_packing_label_employee,packing.label.employee,model_fulfillment_packing_label,shopify_fulfillment.group_packing_employee,1,0,0,0
+access_packing_receipt_supervisor,packing.receipt.supervisor,model_fulfillment_packing_receipt,shopify_fulfillment.group_packing_supervisor,1,0,0,0
+access_packing_wizard_employee,packing.wizard.employee,model_fulfillment_packing_wizard,shopify_fulfillment.group_packing_employee,1,1,1,1
+access_packing_wizard_line_employee,packing.wizard.line.employee,model_fulfillment_packing_wizard_line,shopify_fulfillment.group_packing_employee,1,1,1,1

@@ -284,6 +284,9 @@ class ShopifyOrder(models.Model):
             "order_line": order_lines,
         }
         
+        if self.env.context.get("packing_internal_finalizer"):
+            sale_vals["company_id"] = self.company_id.id
+            sale_vals["warehouse_id"] = self.env.context.get("packing_warehouse_id")
         sale_order = self.env["sale.order"].create(sale_vals)
         
         # Confirm the sale order (move from draft to sale)

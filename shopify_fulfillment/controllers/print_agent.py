@@ -132,7 +132,7 @@ class PrintAgentController(http.Controller):
 
             # Mark order shipped if all jobs completed
             remaining = job.order_id.print_job_ids.filtered(lambda j: j.state != "completed")
-            if not remaining:
+            if not remaining and job.order_id._packing_print_finalizes():
                 job.order_id.write({"state": "shipped"})
                 try:
                     self._push_fulfillments_to_shopify(job.order_id)

@@ -112,7 +112,9 @@ class ShopifyAPI:
         if not fulfillment_orders:
             raise exceptions.UserError("No open fulfillment order found in Shopify.")
 
-        if line_items:
+        if line_items is not None:
+            if not line_items:
+                raise exceptions.UserError("Explicit shipment line quantities are required.")
             wanted = {}
             for item in line_items:
                 key = str(item.get("shopify_line_id") or "")
@@ -142,6 +144,8 @@ class ShopifyAPI:
                         }
                     )
 
+            if any(quantity > 0 for quantity in wanted.values()):
+                raise exceptions.UserError("The exact shipment quantities are no longer fulfillable in Shopify.")
             if not by_fulfillment_order:
                 raise exceptions.UserError(
                     "No fulfillable Shopify line items matched this shipment."
@@ -169,6 +173,19 @@ class ShopifyAPI:
         if resp.status_code >= 400:
             raise exceptions.UserError(f"Fulfillment failed: {resp.text}")
         return resp.json()
+
+    def get_order_fulfillments(self, shopify_order_id):
+        """Read exact tracking/item evidence; fail closed on unavailable or partial data."""
+        url = self._url(f"/orders/{shopify_order_id}/fulfillments.json?limit=250")
+        response = requests.get(url, headers=self._headers(), timeout=15)
+        if response.status_code != 200:
+            raise exceptions.UserError("Shopify fulfillment reconciliation is temporarily unavailable.")
+        if 'rel="next"' in (response.headers.get("Link") or ""):
+            raise exceptions.UserError("Shopify fulfillment evidence is paginated and needs supervisor review.")
+        data = response.json()
+        if not isinstance(data.get("fulfillments"), list):
+            raise exceptions.UserError("Shopify returned invalid fulfillment reconciliation evidence.")
+        return data["fulfillments"]
 
     def _get_fulfillable_orders(self, shopify_order_id: str) -> List[Dict[str, Any]]:
         """Fetch fulfillment orders that still have items to fulfill.

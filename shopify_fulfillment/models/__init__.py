@@ -12,3 +12,5 @@ from . import restock_item  # noqa: F401
 from . import project_task  # noqa: F401
 from . import res_config_settings  # noqa: F401
 from . import res_partner  # noqa: F401
+from . import packing  # noqa: F401
+from . import packing_wizard  # noqa: F401

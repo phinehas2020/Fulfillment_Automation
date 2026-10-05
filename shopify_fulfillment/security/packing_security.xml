@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="group_packing_employee" model="res.groups">
+        <field name="name">Shipping Packing Employee</field>
+        <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+    </record>
+    <record id="group_packing_supervisor" model="res.groups">
+        <field name="name">Shipping Packing Supervisor</field>
+        <field name="implied_ids" eval="[(4, ref('group_packing_employee'))]"/>
+    </record>
+    <record id="packing_order_company_rule" model="ir.rule">
+        <field name="name">Shopify orders: allowed companies</field><field name="model_id" ref="model_shopify_order"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+    <record id="packing_order_line_company_rule" model="ir.rule">
+        <field name="name">Shopify items: allowed companies</field><field name="model_id" ref="model_shopify_order_line"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+    <record id="packing_shipment_company_rule" model="ir.rule">
+        <field name="name">Shipping boxes: allowed companies</field><field name="model_id" ref="model_fulfillment_shipment"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+    <record id="packing_group_company_rule" model="ir.rule">
+        <field name="name">Shipment batches: allowed companies</field><field name="model_id" ref="model_fulfillment_shipment_group"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+    <record id="packing_label_company_rule" model="ir.rule">
+        <field name="name">Packing identities: allowed companies</field><field name="model_id" ref="model_fulfillment_packing_label"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+    <record id="packing_receipt_company_rule" model="ir.rule">
+        <field name="name">Packing receipts: allowed companies</field><field name="model_id" ref="model_fulfillment_packing_receipt"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+    </record>
+</odoo>

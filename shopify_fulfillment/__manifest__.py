@@ -1,14 +1,15 @@
 {
     "name": "Shopify Fulfillment Automation",
     "summary": "Promise-aware Shopify, Shippo, and Amazon Buy Shipping fulfillment",
-    "version": "0.6.0",
+    "version": "18.0.0.7.0",
     "license": "LGPL-3",
     "author": "Your Company",
     "website": "",
-    "depends": ["base", "base_setup", "stock", "mail", "project", "sale"],
+    "depends": ["base", "base_setup", "stock", "mail", "project", "sale", "sale_stock", "account"],
     "installable": True,
     "application": True,
     "data": [
+        "security/packing_security.xml",
         "security/ir.model.access.csv",
         "data/config_params.xml",
         "data/cron.xml",
@@ -24,6 +25,7 @@
         "views/fulfillment_rate_audit_views.xml",
         "views/restock_item_views.xml",
         "views/menu.xml",
+        "views/packing_views.xml",
     ],
     "description": """
     Skeleton for Shopify fulfillment automation.

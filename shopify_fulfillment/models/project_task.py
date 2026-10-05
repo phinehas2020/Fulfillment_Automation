@@ -1,6 +1,7 @@
 import logging
 from odoo import api, fields, models, _
-from odoo.exceptions import UserError
+from odoo.exceptions import AccessError, UserError
+from odoo.tools import float_compare
 
 _logger = logging.getLogger(__name__)
 
@@ -147,12 +148,119 @@ class ProjectTask(models.Model):
         register.action_create_payments()
         return invoices
 
+    def _verify_packing_delivery_coverage(self, sale):
+        """Reject duplicate/extra deliveries before changing any stock quantity."""
+        self.ensure_one()
+        order = self.shopify_order_id
+        products = order._packing_products()
+        expected = {}
+        for line in order.line_ids.filtered(lambda item: item.requires_shipping and item.quantity > 0):
+            product_id = products[line.id].id
+            expected[product_id] = expected.get(product_id, 0) + line.quantity
+        pickings = sale.picking_ids.filtered(lambda picking: picking.picking_type_code == "outgoing" and picking.state != "cancel")
+        if not pickings:
+            raise UserError(_("The packed sale has no customer delivery."))
+        warehouse_locations = self.env["stock.location"].search([("id", "child_of", order.packing_warehouse_id.view_location_id.id)])
+        actual = {}
+        for move in pickings.move_ids.filtered(lambda item: item.state != "cancel"):
+            if move.company_id != order.company_id or move.location_id not in warehouse_locations or move.location_dest_id.usage != "customer":
+                raise UserError(_("A delivery move is outside this packing company's warehouse or customer destination."))
+            quantity = move.quantity if move.state == "done" else move.product_uom_qty
+            quantity = move.product_uom._compute_quantity(quantity, move.product_id.uom_id)
+            actual[move.product_id.id] = actual.get(move.product_id.id, 0) + quantity
+        if set(actual) != set(expected) or any(float_compare(actual[product_id], quantity, precision_rounding=self.env["product.product"].browse(product_id).uom_id.rounding) != 0 for product_id, quantity in expected.items()):
+            raise UserError(_("Existing done and open delivery quantities do not exactly cover the packed order. Supervisor reconciliation is required before any stock movement."))
+        return True
+
+    def _verify_completed_fulfillment_effects(self):
+        """Read actual outcomes; a boolean flag alone never proves completion."""
+        self.ensure_one()
+        order = self.shopify_order_id
+        sale = order.sale_order_id
+        pickings = sale.picking_ids.filtered(lambda picking: picking.picking_type_code == "outgoing" and picking.state != "cancel")
+        invoices = sale.invoice_ids.filtered(lambda invoice: invoice.move_type == "out_invoice" and invoice.state != "cancel")
+        allowed_payments = ("paid", "in_payment") if order.completion_policy_version == "packing_v1" else ("paid", "in_payment", "reversed")
+        if not sale or sale.company_id != order.company_id or not pickings or any(picking.state != "done" for picking in pickings) or not invoices or any(invoice.state != "posted" or invoice.payment_state not in allowed_payments or invoice.amount_residual > 0 for invoice in invoices):
+            raise UserError(_("The inventory flag lacks verified completed delivery and accounting. Supervisor reconciliation is required."))
+        if order.completion_policy_version == "packing_v1":
+            if sale.warehouse_id != order.packing_warehouse_id:
+                raise UserError(_("The verified sale order belongs to a different packing warehouse."))
+            self._verify_packing_delivery_coverage(sale)
+        return sale
+
+    def _finalize_sale_delivery_accounting_strict(self):
+        """Existing delivery/payment policy with failures propagated atomically.
+
+        Used by both the task workflow and guarded label packing. The caller
+        controls the transaction/savepoint and therefore never records partial
+        delivery or accounting as success.
+        """
+        self.ensure_one()
+        order = self.shopify_order_id
+        if not order or not self.is_fulfillment_task:
+            raise UserError(_("This task is not linked to a fulfillment order."))
+        if self.fulfillment_inventory_deducted:
+            return self._verify_completed_fulfillment_effects()
+        sale = order._create_sale_order()
+        if not sale:
+            raise UserError(_("Sale order could not be created for %s.") % order.order_name)
+        if sale.company_id != order.company_id:
+            raise UserError(_("The sale order belongs to a different company."))
+        if order.completion_policy_version == "packing_v1":
+            products = order._packing_products()
+            expected = {}
+            for line in order.line_ids.filtered(lambda item: item.requires_shipping and item.quantity > 0):
+                product_id = products[line.id].id
+                expected[product_id] = expected.get(product_id, 0) + line.quantity
+            actual = {}
+            for line in sale.order_line.filtered(lambda item: not item.display_type and item.product_id.type != "service"):
+                product_id = line.product_id.id
+                quantity = line.product_uom._compute_quantity(line.product_uom_qty, line.product_id.uom_id)
+                actual[product_id] = actual.get(product_id, 0) + quantity
+            if actual != expected:
+                raise UserError(_("The existing sale order's physical products or quantities do not match the packed order."))
+            if sale.warehouse_id != order.packing_warehouse_id:
+                raise UserError(_("The sale order warehouse does not match the packing warehouse."))
+            self._verify_packing_delivery_coverage(sale)
+        pickings = sale.picking_ids.filtered(lambda picking: picking.picking_type_code == "outgoing" and picking.state != "cancel")
+        if not pickings:
+            raise UserError(_("No delivery order was generated for Sale Order %s.") % sale.name)
+        for picking in pickings.sorted("id"):
+            if picking.state != "done":
+                if picking.state == "draft":
+                    picking.action_confirm()
+                picking.action_assign()
+                self._set_picking_done_quantities(picking)
+                self._validate_fulfillment_picking(picking)
+            if picking.state != "done":
+                raise UserError(_("Delivery %s is not Done; invoicing was stopped.") % picking.name)
+        invoices = self._mark_sale_order_paid(sale)
+        if any(invoice.state != "posted" or invoice.payment_state not in (("paid", "in_payment") if order.completion_policy_version == "packing_v1" else ("paid", "in_payment", "reversed")) or invoice.amount_residual > 0 for invoice in invoices):
+            raise UserError(_("Accounting has not confirmed posted, paid invoices for %s.") % sale.name)
+        # Bounded private write after verifying actual delivery and accounting;
+        # ordinary callers still cannot supply or forge this completion flag.
+        self.sudo().write({"fulfillment_inventory_deducted": True})
+        if order.fulfillment_type == "pickup":
+            order.write({"state": "pickup_completed", "error_message": False})
+        self.message_post(body=_("Sale Order %s delivered (%s) and marked paid (%s).") % (sale.name, ", ".join(pickings.mapped("name")), ", ".join(invoices.mapped("name"))))
+        return sale
+
     def action_fulfillment_deduct_inventory(self):
         """Deduct inventory for the linked Shopify Order."""
         self.ensure_one()
         if not self.shopify_order_id or not self.is_fulfillment_task:
             return
             
+        if self.shopify_order_id.completion_policy_version == "packing_v1":
+            order = self.shopify_order_id
+            order._packing_authorize(supervisor=True)
+            order._packing_lock()
+            order._packing_allocations()
+            order._packing_refresh_eligibility()
+            if any(shipment.packing_state != "packed" for shipment in order._packing_shipments()):
+                raise UserError(_("Finish every box using its shipping label before completing this task."))
+            return order._packing_finish_operational()
+
         if self.fulfillment_inventory_deducted:
             return
 
@@ -183,40 +291,9 @@ class ProjectTask(models.Model):
         _logger.info("Starting inventory deduction for task %s (Order: %s)", self.id, self.shopify_order_id.order_name)
 
         try:
-            sale_order = self.shopify_order_id._create_sale_order()
-            if not sale_order:
-                raise UserError(_("Sale order could not be created for %s.") % self.shopify_order_id.order_name)
+            with self.env.cr.savepoint():
+                self._finalize_sale_delivery_accounting_strict()
 
-            picking = self._get_sale_order_delivery(sale_order)
-            if picking.state != "done":
-                if picking.state == "draft":
-                    picking.action_confirm()
-                picking.action_assign()
-                self._set_picking_done_quantities(picking)
-                self._validate_fulfillment_picking(picking)
-
-            if picking.state != "done":
-                raise UserError(_("Delivery %s is not Done; invoicing was stopped.") % picking.name)
-            invoices = self._mark_sale_order_paid(sale_order)
-            self.fulfillment_inventory_deducted = True
-            if self.shopify_order_id.fulfillment_type == "pickup":
-                self.shopify_order_id.write({
-                    "state": "pickup_completed",
-                    "error_message": False,
-                })
-            invoice_names = ", ".join(invoices.mapped("name"))
-            self.message_post(
-                body=_("Sale Order %s delivered via %s and marked paid (%s).")
-                % (sale_order.name, picking.name, invoice_names)
-            )
-            _logger.info(
-                "Order %s delivered through Sale Order %s, Delivery %s, Invoices %s",
-                self.shopify_order_id.order_name,
-                sale_order.name,
-                picking.name,
-                invoice_names,
-            )
-                
         except Exception as e:
             _logger.exception("Failed to fulfill sale order for task %s", self.id)
             if self.shopify_order_id.fulfillment_type == "pickup":
@@ -228,11 +305,27 @@ class ProjectTask(models.Model):
             self._send_task_error_alert("Sale Order Fulfillment Failed", str(e))
 
 
+    def unlink(self):
+        if self.filtered(lambda task: task.is_fulfillment_task and task.shopify_order_id.completion_policy_version == "packing_v1"):
+            raise UserError(_("Canonical packing tasks must be retained with their delivery and accounting history."))
+        return super().unlink()
+
     @api.model_create_multi
     def create(self, vals_list):
+        if "default_fulfillment_inventory_deducted" in self.env.context and not self.env.su:
+            raise AccessError(_("Inventory completion cannot be supplied through task defaults."))
+        for vals in vals_list:
+            if "fulfillment_inventory_deducted" in vals and not self.env.su:
+                raise AccessError(_("Inventory completion can only be set by the verified fulfillment finalizer."))
+            effective_order_id = vals.get("shopify_order_id", self.env.context.get("default_shopify_order_id"))
+            order = self.env["shopify.order"].browse(effective_order_id).exists() if effective_order_id else self.env["shopify.order"]
+            if order and order.completion_policy_version == "packing_v1" and not self.env.su:
+                raise AccessError(_("Packing tasks must be linked through the canonical order workflow."))
+            if order and order.completion_policy_version == "packing_v1" and self._is_done_state(vals.get("state", self.env.context.get("default_state"))) and not (self.env.su and self.env.context.get("packing_internal_finalizer")):
+                raise UserError(_("Create this fulfillment task as open; finish its boxes using their labels."))
         tasks = super().create(vals_list)
         for task in tasks:
-            if task.is_fulfillment_task and self._is_done_state(task.state) and not task.fulfillment_inventory_deducted:
+            if task.is_fulfillment_task and task.shopify_order_id.completion_policy_version != "packing_v1" and self._is_done_state(task.state) and not task.fulfillment_inventory_deducted:
                 try:
                     task.action_fulfillment_deduct_inventory()
                 except Exception as e:
@@ -242,14 +335,33 @@ class ProjectTask(models.Model):
         return tasks
 
     def write(self, vals):
+        if "fulfillment_inventory_deducted" in vals and not self.env.su:
+            raise AccessError(_("Inventory completion can only be set by the verified fulfillment finalizer."))
+        if {"shopify_order_id", "is_fulfillment_task"}.intersection(vals):
+            orders = self.mapped("shopify_order_id")
+            if vals.get("shopify_order_id"):
+                orders |= self.env["shopify.order"].browse(vals["shopify_order_id"])
+            for order in orders.filtered(lambda record: record.completion_policy_version == "packing_v1"):
+                if not self.env.su:
+                    raise AccessError(_("Packing task links must be preserved by the canonical order workflow."))
+                order._packing_lock()
+                if order.packing_operational_state == "complete":
+                    raise UserError(_("Completed packing task links must be retained."))
         restock_tasks = self.filtered("fulfillment_restock_item_id")
         restock_done_before = {t.id: t._restock_task_is_done() for t in restock_tasks}
 
+        if "state" in vals and self._is_done_state(vals["state"]) and not (self.env.su and self.env.context.get("packing_internal_finalizer")):
+            for task in self.filtered(lambda record: record.is_fulfillment_task and record.shopify_order_id.completion_policy_version == "packing_v1"):
+                order = task.shopify_order_id
+                order._packing_authorize()
+                order._packing_lock()
+                if order.packing_operational_state != "complete":
+                    raise UserError(_("Complete each box through Scan to Finish or the Odoo Packing action. This task becomes Done after delivery and accounting succeed."))
         res = super().write(vals)
         # Check if task is being marked as done
         if 'state' in vals and self._is_done_state(vals["state"]):
              for task in self:
-                  if task.is_fulfillment_task and not task.fulfillment_inventory_deducted:
+                  if task.is_fulfillment_task and task.shopify_order_id.completion_policy_version != "packing_v1" and not task.fulfillment_inventory_deducted:
                       try:
                           task.action_fulfillment_deduct_inventory()
                       except Exception as e:
